@@ -459,10 +459,29 @@ class AutoLogAI:
     
     def get_training_status(self):
         """Get information about the AI model training status"""
+        # Get vectorizer info safely
+        vectorizer_info = None
+        if self.vectorizer:
+            try:
+                if self.is_trained and hasattr(self.vectorizer, 'vocabulary_'):
+                    vectorizer_info = f"TF-IDF with {len(self.vectorizer.vocabulary_)} features"
+                else:
+                    vectorizer_info = "TF-IDF (not fitted)"
+            except Exception:
+                vectorizer_info = "TF-IDF"
+        
+        # Get last updated time safely
+        last_updated = None
+        if self.is_trained:
+            try:
+                last_updated = datetime.fromtimestamp(self.model_dir.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+            except Exception:
+                last_updated = None
+        
         return {
             "is_trained": self.is_trained,
-            "anomaly_model": str(self.anomaly_model.__class__.__name__) if self.anomaly_model else None,
-            "vectorizer": f"TF-IDF with {len(self.vectorizer.vocabulary_) if self.is_trained else 0} features" if self.vectorizer else None,
-            "svd_model": f"SVD with {self.svd_model.n_components} components" if self.svd_model else None,
-            "last_updated": datetime.fromtimestamp(self.model_dir.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S') if self.is_trained else None
+            "anomaly_model": self.anomaly_model.__class__.__name__ if self.anomaly_model is not None else None,
+            "vectorizer": vectorizer_info,
+            "svd_model": f"SVD with {self.svd_model.n_components} components" if self.svd_model is not None else None,
+            "last_updated": last_updated
         }
