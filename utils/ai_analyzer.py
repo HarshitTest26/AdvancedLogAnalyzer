@@ -402,9 +402,21 @@ class AutoLogAI:
         }
         
         # If we have enough data, train or update models
-        if len(issue_entries) >= 100 and not self.is_trained:
-            logger.info(f"Training models with {len(issue_entries)} entries")
-            self._train_models(issue_entries)
+        if len(issue_entries) >= 100:
+            if not self.is_trained:
+                logger.info(f"Training initial model with {len(issue_entries)} entries")
+                self._train_models(issue_entries)
+            elif len(issue_entries) >= 500:  # Retrain periodically with larger datasets
+                # Check when the model was last updated
+                try:
+                    model_age = datetime.now() - datetime.fromtimestamp(self.model_dir.stat().st_mtime)
+                    if model_age.days >= 7:  # Retrain weekly
+                        logger.info(f"Updating model with {len(issue_entries)} new entries (model is {model_age.days} days old)")
+                        self._train_models(issue_entries)
+                except (OSError, AttributeError):
+                    # If we can't determine model age, retrain to be safe
+                    logger.info(f"Cannot determine model age, retraining with {len(issue_entries)} entries")
+                    self._train_models(issue_entries)
         
         return {
             "entries": clustered_entries,

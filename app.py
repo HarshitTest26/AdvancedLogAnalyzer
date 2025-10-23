@@ -5,6 +5,7 @@ import seaborn as sns
 from pathlib import Path
 import time
 import logging
+import re
 from datetime import datetime
 
 # Import our utility modules
@@ -734,6 +735,10 @@ def display_utterance_analysis():
             if len(session['components']) > 10:
                 st.write(f"... and {len(session['components']) - 10} more")
             
+            # Add dialog state visualization
+            if 'dialog_states' in session and session['dialog_states']:
+                display_dialog_state_timeline(session)
+            
             # Show session timing analysis
             if session['duration_ms'] > 3000:
                 st.warning(f"⚠️ Long processing time detected ({session['duration_ms']:.0f}ms)")
@@ -813,6 +818,9 @@ def display_full_trace():
                 else:
                     st.info("No key events found in this session.")
                 
+                # Add dialog state timeline visualization
+                display_dialog_state_timeline_from_session_data(session_data)
+                
                 return  # Found and displayed the session
     
     # If we reach here, session wasn't found
@@ -821,6 +829,214 @@ def display_full_trace():
         st.session_state.selected_session_id = None
         st.session_state.selected_file = None
         st.rerun()
+
+def display_dialog_state_timeline(session):
+    """
+    Display a timeline visualization of dialog state transitions.
+    
+    Args:
+        session: Dictionary containing session data with dialog_states
+    """
+    dialog_states = session.get('dialog_states', [])
+    if not dialog_states:
+        st.info("No dialog state transitions detected in this session")
+        return
+    
+    # Display the state changes as a timeline
+    st.subheader("Dialog State Transitions")
+    
+    # Define colors for different states
+    state_colors = {
+        'LISTENING': '#3498db',  # Blue
+        'THINKING': '#f39c12',   # Orange
+        'SPEAKING': '#2ecc71',   # Green
+        'IDLE': '#95a5a6'        # Gray
+    }
+    
+    # Create a horizontal timeline
+    cols = st.columns(len(dialog_states))
+    for i, state_change in enumerate(dialog_states):
+        state = state_change['state']
+        color = state_colors.get(state, '#95a5a6')
+        time = state_change['timestamp']
+        
+        with cols[i]:
+            st.markdown(
+                f"""
+                <div style="text-align: center;">
+                    <div style="width: 30px; height: 30px; border-radius: 15px; background-color: {color}; 
+                             margin: 0 auto; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold;">
+                        {state[0]}
+                    </div>
+                    <div style="font-size: 10px; margin-top: 5px;">{state}</div>
+                    <div style="font-size: 9px;">{time}</div>
+                </div>
+                """, 
+                unsafe_allow_html=True
+            )
+    
+    # If there are multiple state transitions, calculate time in each state
+    if len(dialog_states) > 1:
+        st.subheader("Time Spent in Each Dialog State")
+        
+        # Convert timestamps to datetime objects
+        for state in dialog_states:
+            state['timestamp_obj'] = pd.to_datetime(state['timestamp'])
+        
+        # Calculate durations
+        state_durations = []
+        for i in range(len(dialog_states) - 1):
+            current = dialog_states[i]
+            next_state = dialog_states[i+1]
+            
+            duration_ms = (next_state['timestamp_obj'] - current['timestamp_obj']).total_seconds() * 1000
+            state_durations.append({
+                'state': current['state'],
+                'duration_ms': duration_ms
+            })
+        
+        # Display as a bar chart
+        if state_durations:
+            df = pd.DataFrame(state_durations)
+            fig, ax = plt.subplots()
+            bars = sns.barplot(x='state', y='duration_ms', data=df)
+            plt.title("Duration in Each State")
+            plt.xlabel("Dialog State")
+            plt.ylabel("Duration (ms)")
+            st.pyplot(fig)
+
+def display_dialog_state_timeline_from_session_data(session_data):
+    """
+    Display a timeline visualization of dialog state transitions from DataFrame.
+    
+    Args:
+        session_data: DataFrame containing session log entries
+    """
+    if session_data.empty:
+        st.info("No dialog state data available")
+        return
+    
+    # Look for dialog state transitions in the logs
+    state_changes = []
+    current_state = None
+    
+    # Define state patterns
+    state_patterns = {
+        'LISTENING': r'(DialogState.*LISTENING|setAnimationState\s+LISTENING|state[=:]?\s*LISTENING)',
+        'THINKING': r'(DialogState.*THINKING|setAnimationState\s+THINKING|state[=:]?\s*THINKING)',
+        'SPEAKING': r'(DialogState.*SPEAKING|setAnimationState\s+SPEAKING|state[=:]?\s*SPEAKING)',
+        'IDLE': r'(DialogState.*IDLE|setAnimationState\s+IDLE|state[=:]?\s*IDLE)'
+    }
+    
+    # Extract state changes
+    for idx, row in session_data.iterrows():
+        message = row.get('message', '')
+        timestamp = row.get('timestamp')
+        
+        for state, pattern in state_patterns.items():
+            if re.search(pattern, message, re.IGNORECASE) and state != current_state:
+                state_changes.append({
+                    'timestamp': timestamp,
+                    'state': state,
+                    'message': message
+                })
+                current_state = state
+                break
+    
+    if not state_changes:
+        st.info("No dialog state transitions detected in this session")
+        return
+    
+    # Display the state changes as a timeline
+    st.subheader("Dialog State Transitions")
+    
+    # Create a visual timeline
+    timeline_html = """
+    <div style="margin-top: 20px;">
+        <div style="display: flex; align-items: center;">
+    """
+    
+    # Define colors for different states
+    state_colors = {
+        'LISTENING': '#3498db',  # Blue
+        'THINKING': '#f39c12',   # Orange
+        'SPEAKING': '#2ecc71',   # Green
+        'IDLE': '#95a5a6'        # Gray
+    }
+    
+    # Add state bubbles to timeline
+    for i, change in enumerate(state_changes):
+        state = change['state']
+        color = state_colors.get(state, '#95a5a6')
+        
+        # Add connecting line except for first state
+        if i > 0:
+            timeline_html += f"""
+            <div style="height: 4px; background-color: #ddd; flex-grow: 1;"></div>
+            """
+            
+        # Add state bubble
+        timeline_html += f"""
+        <div style="position: relative;">
+            <div style="width: 30px; height: 30px; border-radius: 15px; background-color: {color}; 
+                     display: flex; align-items: center; justify-content: center; color: white; font-weight: bold;">
+                {state[0]}
+            </div>
+            <div style="position: absolute; top: 35px; transform: translateX(-50%); white-space: nowrap; font-size: 12px;">
+                {change['timestamp']}
+            </div>
+        </div>
+        """
+    
+    timeline_html += """
+        </div>
+    </div>
+    """
+    
+    st.markdown(timeline_html, unsafe_allow_html=True)
+    
+    # Show state change details in a table
+    st.write("### State Change Details")
+    
+    state_df = pd.DataFrame(state_changes)
+    st.dataframe(state_df, use_container_width=True)
+    
+    # Calculate time spent in each state
+    if len(state_changes) > 1:
+        time_in_state = []
+        for i in range(len(state_changes) - 1):
+            current = state_changes[i]
+            next_state = state_changes[i+1]
+            
+            start_time = pd.to_datetime(current['timestamp'])
+            end_time = pd.to_datetime(next_state['timestamp'])
+            
+            duration_ms = (end_time - start_time).total_seconds() * 1000
+            time_in_state.append({
+                'state': current['state'],
+                'duration_ms': duration_ms
+            })
+        
+        # Display time in each state
+        st.write("### Time Spent in Each State")
+        time_df = pd.DataFrame(time_in_state)
+        
+        # Create a bar chart
+        fig, ax = plt.subplots(figsize=(10, 4))
+        bars = ax.bar(time_df['state'], time_df['duration_ms'], color=[state_colors.get(s, '#95a5a6') for s in time_df['state']])
+        
+        # Add labels
+        for bar in bars:
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height + 5,
+                    f'{int(height)}ms',
+                    ha='center', va='bottom')
+            
+        plt.title("Duration in Each Dialog State")
+        plt.xlabel("State")
+        plt.ylabel("Duration (ms)")
+        plt.tight_layout()
+        st.pyplot(fig)
 
 def main():
     """Main application function"""

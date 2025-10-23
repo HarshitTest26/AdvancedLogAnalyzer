@@ -295,13 +295,19 @@ def extract_key_utterance_components(parsed_df):
         'response_generation': []
     }
     
-    # Voice activation components (AHE-AHAP, etc.)
-    voice_components = parsed_df[parsed_df['tag'].str.contains('AHAP|Voice|Audio', case=False, na=False)]
+    # Voice activation components (AHE-AHAP, Alexa, etc.)
+    voice_components = parsed_df[parsed_df['tag'].str.contains(
+        'AHAP|Voice|Audio|SpeechRecognizer|AACSBroadcast|Wakeword|CoAssistant', 
+        case=False, na=False
+    )]
     if not voice_components.empty:
         components['voice_activation'] = voice_components['tag'].unique().tolist()
     
     # NLU components
-    nlu_components = parsed_df[parsed_df['tag'].str.contains('NLU|Intent|LRO', case=False, na=False)]
+    nlu_components = parsed_df[parsed_df['tag'].str.contains(
+        'NLU|Intent|LRO|DialogState|AlexaClient', 
+        case=False, na=False
+    )]
     if not nlu_components.empty:
         components['nlu_processing'] = nlu_components['tag'].unique().tolist()
     
