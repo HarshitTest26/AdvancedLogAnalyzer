@@ -38,6 +38,9 @@ Thumbs.db
 # Logs folder - contains sensitive data
 logs/
 
+#reports/
+reports/
+
 # Model files (can be large)
 models/
 *.joblib
