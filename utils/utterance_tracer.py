@@ -56,6 +56,8 @@ ID_PATTERNS = [
     r'(?:reqId|sessionId|uttId)[:\s]*([a-zA-Z0-9\-_]+)',
     r'\[([a-fA-F0-9\-]{8,})\]',  # UUID-like patterns in brackets
     r'ID[:\s=]*([a-zA-Z0-9\-_]+)',
+    r'(?:for|of)\s+(voice_\w+)',  # Match "for voice_001" or "of voice_002"
+    r'(?:for|of)\s+(req_\w+)',    # Match "for req_001" or "of req_002"
 ]
 
 # Components typically involved in voice assistant processing
