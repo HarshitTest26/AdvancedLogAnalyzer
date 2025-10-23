@@ -49,3 +49,39 @@ models/
 *.tmp
 *.log
 temp/
+
+# Security - Prevent accidental commits of sensitive files
+# API keys and secrets
+.env
+.env.*
+secrets.json
+secrets.txt
+config.json
+api_keys.*
+credentials.*
+*.key
+*.pem
+*.p12
+*.pfx
+
+# AWS specific
+.aws/
+aws-credentials
+aws-config
+*.aws
+
+# Common sensitive file patterns
+*secret*
+*password*
+*credential*
+*private*
+*token*
+!**/templates/**/*secret*  # Allow template files with "secret" in name
+!**/examples/**/*secret*   # Allow example files
+
+# Backup and temporary files that might contain sensitive data
+*.bak
+*.backup
+*.old
+*.orig
+*~
