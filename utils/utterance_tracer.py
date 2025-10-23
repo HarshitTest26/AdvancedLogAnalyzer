@@ -16,7 +16,8 @@ class UtteranceTracer:
             r'AHE-NLU.*processing utterance',
             r'WakewordDetected.*payload.*wakeword.*ALEXA',  # Add for Alexa detection
             r'topic=SpeechRecognizer.*action=WakewordDetected',  # Common in Alexa logs
-            r'DialogStateChanged.*state.*LISTENING'         # Add for dialog state changes
+            r'DialogStateChanged.*state.*LISTENING',         # Add for dialog state changes
+            r'payload=\{"wakeword":"ALEXA"\}'  # Add this line for direct payload matching
         ]
         
         # Add message ID extraction patterns for different formats
@@ -80,7 +81,7 @@ class UtteranceTracer:
                 sessions[current_session].append(idx)
                 
                 # Check if this entry ends the session (response or timeout)
-                if "response complete" in message.lower() or "timeout" in message.lower() or "DialogState.*IDLE" in message:
+                if "response complete" in message.lower() or "timeout" in message.lower() or re.search(r"DialogState.*IDLE", message):
                     current_session = None
         
         # Second pass - associate entries by PID/TID and timestamp correlation
@@ -100,6 +101,9 @@ class UtteranceTracer:
                         if (row['pid'] in pids or row['tid'] in tids) and \
                            min_time <= row['timestamp'] <= max_time:
                             sessions[session_id].append(idx)
+        
+        # Clean up abandoned sessions
+        sessions = self.cleanup_abandoned_sessions(sessions)
         
         return {sid: df.iloc[indices].sort_values('timestamp') for sid, indices in sessions.items()}
     
@@ -237,3 +241,32 @@ class UtteranceTracer:
                 return state
                 
         return None
+
+    def cleanup_abandoned_sessions(self, sessions, max_duration_seconds=120):
+        """
+        Cleans up sessions that exceed a maximum duration
+        
+        Args:
+            sessions: Dictionary mapping session IDs to dataframes
+            max_duration_seconds: Maximum allowed duration for a session
+            
+        Returns:
+            Dictionary with long sessions removed
+        """
+        cleaned_sessions = {}
+        
+        for session_id, session_df in sessions.items():
+            # Calculate duration
+            try:
+                min_time = min(session_df['timestamp'])
+                max_time = max(session_df['timestamp'])
+                duration_seconds = (max_time - min_time).total_seconds()
+                
+                # Only keep sessions under the maximum duration
+                if duration_seconds <= max_duration_seconds:
+                    cleaned_sessions[session_id] = session_df
+            except Exception:
+                # If we can't calculate time, just keep the session
+                cleaned_sessions[session_id] = session_df
+                
+        return cleaned_sessions
