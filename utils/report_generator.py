@@ -72,7 +72,7 @@ def generate_summary_reports_targetted(analysis_results_list):
 
 def generate_qa_summary(analysis_results_list):
     """
-    Generate QA-focused summary report with AI insights.
+    Generate QA-focused summary report with AI insights and utterance analysis.
     
     Args:
         analysis_results_list (list): List of analysis results dictionaries
@@ -97,6 +97,19 @@ def generate_qa_summary(analysis_results_list):
         if "summary" in result["ai_analysis"] and "anomaly_count" in result["ai_analysis"]["summary"]:
             total_anomalies += result["ai_analysis"]["summary"]["anomaly_count"]
     
+    # Aggregate utterance metrics
+    total_utterance_flows = 0
+    failed_utterances = 0
+    completed_utterances = 0
+    for result in analysis_results_list:
+        if "error" in result or "utterance_analysis" not in result:
+            continue
+        if "patterns" in result["utterance_analysis"]:
+            patterns = result["utterance_analysis"]["patterns"]
+            total_utterance_flows += patterns.get("total_flows", 0)
+            failed_utterances += patterns.get("failed", 0)
+            completed_utterances += patterns.get("completed", 0)
+    
     # Aggregate component counts
     all_components = {}
     for result in analysis_results_list:
@@ -113,13 +126,23 @@ def generate_qa_summary(analysis_results_list):
     
     # Build the QA report content
     qa_content = [
-        "# QA Summary Report with AI Insights",
+        "# QA Summary Report with AI Insights and Utterance Analysis",
         f"**Generated on:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"**Total Log Files Analyzed:** {len([r for r in analysis_results_list if 'error' not in r])}",
         "\n## Overview",
         f"**Total Issues Found:** {total_issues}",
         f"**QA Relevant Issues:** {qa_relevant_issues} ({round(qa_relevant_issues/total_issues*100 if total_issues else 0, 1)}%)",
     ]
+    
+    # Add utterance metrics if available
+    if total_utterance_flows > 0:
+        utterance_success_rate = (completed_utterances / total_utterance_flows * 100) if total_utterance_flows > 0 else 0
+        qa_content.extend([
+            f"**Voice Assistant Utterances:** {total_utterance_flows}",
+            f"**Completed Utterances:** {completed_utterances}",
+            f"**Failed Utterances:** {failed_utterances}",
+            f"**Utterance Success Rate:** {round(utterance_success_rate, 1)}%",
+        ])
     
     # Add AI insights if available
     if total_anomalies > 0:
@@ -153,6 +176,40 @@ def generate_qa_summary(analysis_results_list):
                 qa_content.append(f"- **Resulting Error:** {cause.get('first_error', 'Unknown')}")
                 qa_content.append(f"- **Timestamp:** {cause.get('timestamp_start', 'Unknown')}")
     
+    # Add utterance flow section if available
+    if total_utterance_flows > 0:
+        qa_content.append("\n## Voice Assistant Utterance Analysis")
+        qa_content.append("This section provides insights into voice assistant interactions traced through the logs.")
+        
+        # Collect failed utterances for detailed reporting
+        failed_utterance_details = []
+        for result in analysis_results_list:
+            if "error" in result or "utterance_analysis" not in result:
+                continue
+            if "flows" in result["utterance_analysis"]:
+                for flow in result["utterance_analysis"]["flows"]:
+                    if flow.get("status") == "failed":
+                        failed_utterance_details.append({
+                            'session_id': flow.get('session_id'),
+                            'duration': flow.get('duration_seconds'),
+                            'components': ', '.join(flow.get('components', [])),
+                            'file': result['log_file_name']
+                        })
+        
+        if failed_utterance_details:
+            qa_content.append("\n### Failed Utterances")
+            qa_content.append("The following voice commands failed to complete successfully:")
+            qa_content.extend([
+                "\n| Session ID | Duration (s) | Components Involved | Log File |",
+                "| ---------- | -----------: | ------------------- | -------- |",
+            ])
+            
+            for detail in failed_utterance_details[:10]:  # Limit to 10 for readability
+                duration = f"{detail['duration']:.2f}" if detail['duration'] is not None else "N/A"
+                qa_content.append(
+                    f"| {detail['session_id']} | {duration} | {detail['components']} | {detail['file']} |"
+                )
+    
     # Standard top components section
     qa_content.append("\n## Top Failing Components")
     qa_content.extend([
@@ -175,6 +232,16 @@ def generate_qa_summary(analysis_results_list):
         qa_content.append(f"### {result['log_file_name']}")
         qa_content.append(f"- **Total Issues:** {result['issues_found']}")
         qa_content.append(f"- **QA Relevant Issues:** {result['qa_relevant_issues']}")
+        
+        # Add utterance insights for this file if available
+        if "utterance_analysis" in result and "patterns" in result["utterance_analysis"]:
+            patterns = result["utterance_analysis"]["patterns"]
+            if patterns.get("total_flows", 0) > 0:
+                qa_content.append(f"- **Utterance Flows:** {patterns['total_flows']}")
+                qa_content.append(f"  - Completed: {patterns.get('completed', 0)}")
+                qa_content.append(f"  - Failed: {patterns.get('failed', 0)}")
+                if patterns.get('avg_duration') is not None:
+                    qa_content.append(f"  - Average Duration: {patterns['avg_duration']}s")
         
         # Add AI insights for this file if available
         if ("ai_analysis" in result and 
@@ -201,7 +268,7 @@ def generate_qa_summary(analysis_results_list):
 
 def generate_dev_summary(analysis_results_list):
     """
-    Generate Developer-focused summary report with AI insights.
+    Generate Developer-focused summary report with AI insights and utterance analysis.
     
     Args:
         analysis_results_list (list): List of analysis results dictionaries
@@ -214,7 +281,7 @@ def generate_dev_summary(analysis_results_list):
     
     # Build the Dev report content
     dev_content = [
-        "# Developer Technical Summary Report with AI Insights",
+        "# Developer Technical Summary Report with AI Insights and Utterance Analysis",
         f"**Generated on:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"**Total Log Files Analyzed:** {len([r for r in analysis_results_list if 'error' not in r])}",
         "\n## Technical Overview"
@@ -240,6 +307,37 @@ def generate_dev_summary(analysis_results_list):
             continue
             
         dev_content.append(f"\n## {result['log_file_name']}")
+        
+        # Add utterance analysis section if available
+        if "utterance_analysis" in result and "flows" in result["utterance_analysis"]:
+            flows = result["utterance_analysis"]["flows"]
+            patterns = result["utterance_analysis"].get("patterns", {})
+            
+            if patterns.get("total_flows", 0) > 0:
+                dev_content.append("\n### Utterance Flow Analysis")
+                dev_content.append(f"- **Total Utterance Flows:** {patterns['total_flows']}")
+                dev_content.append(f"- **Completed:** {patterns.get('completed', 0)}")
+                dev_content.append(f"- **Failed:** {patterns.get('failed', 0)}")
+                dev_content.append(f"- **Incomplete:** {patterns.get('incomplete', 0)}")
+                if patterns.get('avg_duration') is not None:
+                    dev_content.append(f"- **Average Duration:** {patterns['avg_duration']}s")
+                dev_content.append(f"- **Error Rate:** {patterns.get('error_rate', 0)}%")
+                
+                # Add common failure components
+                if patterns.get('common_failure_components'):
+                    dev_content.append("\n**Components Most Frequently Involved in Failed Utterances:**")
+                    for comp_info in patterns['common_failure_components']:
+                        dev_content.append(f"- {comp_info['component']}: {comp_info['count']} failures")
+                
+                # Add sample failed utterances
+                failed_flows = [f for f in flows if f.get('status') == 'failed']
+                if failed_flows:
+                    dev_content.append("\n**Sample Failed Utterance Flows:**")
+                    for i, flow in enumerate(failed_flows[:3], 1):  # Show up to 3 examples
+                        dev_content.append(f"\n**Flow {i} - Session: {flow.get('session_id')}**")
+                        dev_content.append(f"- Duration: {flow.get('duration_seconds', 'N/A')}s")
+                        dev_content.append(f"- Components: {', '.join(flow.get('components', []))}")
+                        dev_content.append(f"- Timeline Events: {flow.get('entry_count', 0)}")
         
         # Add AI insights section if available
         if "ai_analysis" in result and "summary" in result["ai_analysis"]:

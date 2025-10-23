@@ -4,6 +4,7 @@ import streamlit as st
 from pathlib import Path
 import logging
 from datetime import datetime
+from .utterance_tracer import UtteranceTracer
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -48,12 +49,13 @@ LOG_PATTERN = re.compile(
 )
 
 @st.cache_data
-def analyze_logs_refactored(log_file_path):
+def analyze_logs_refactored(log_file_path, enable_utterance_tracing=True):
     """
     Analyzes log files using a three-level filtering approach with improved memory handling.
     
     Args:
         log_file_path (Path): Path object to the log file
+        enable_utterance_tracing (bool): Whether to perform utterance tracing analysis
     
     Returns:
         dict: Dictionary containing analysis results and filtered log entries
@@ -221,6 +223,42 @@ def analyze_logs_refactored(log_file_path):
             'qa_relevant_issues': sum(1 for entry in issue_entries if entry['is_qa_relevant']),
             'analysis_timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
+        
+        # Perform utterance tracing if enabled
+        if enable_utterance_tracing and issue_entries:
+            try:
+                logger.info("Performing utterance tracing analysis")
+                tracer = UtteranceTracer()
+                
+                # Enrich entries with utterance data
+                enriched_entries = tracer.enrich_with_utterance_data(issue_entries)
+                
+                # Update the issue entries with enriched data
+                analysis_results['issue_entries'] = enriched_entries
+                
+                # Trace utterance flows
+                flows = tracer.trace_utterance_flows(enriched_entries)
+                
+                # Analyze patterns
+                patterns = tracer.analyze_utterance_patterns(flows)
+                
+                # Add utterance analysis to results
+                analysis_results['utterance_analysis'] = {
+                    'flows': flows,
+                    'patterns': patterns,
+                    'total_utterance_related': sum(1 for e in enriched_entries if e.get('is_utterance_related', False))
+                }
+                
+                logger.info(f"Utterance tracing complete. Found {len(flows)} utterance flows.")
+            except Exception as e:
+                logger.error(f"Error during utterance tracing: {str(e)}")
+                # Don't fail the entire analysis if utterance tracing fails
+                analysis_results['utterance_analysis'] = {
+                    'error': str(e),
+                    'flows': [],
+                    'patterns': {},
+                    'total_utterance_related': 0
+                }
         
         logger.info(f"Completed analysis of {log_file_path.name}. Found {len(issue_entries)} issues.")
         return analysis_results
