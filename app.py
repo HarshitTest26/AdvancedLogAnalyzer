@@ -249,151 +249,160 @@ def display_detailed_issues():
     if len(st.session_state.analysis_results) > 1:
         tabs = st.tabs([result.get('log_file_name', f"Result {i+1}") 
                         for i, result in enumerate(st.session_state.analysis_results)])
-    else:
-        tabs = [st]  # If only one result, don't create tabs
-    
-    for i, tab in enumerate(tabs):
-        result = st.session_state.analysis_results[i]
         
-        # Skip if there was an error with this file
-        if "error" in result:
-            with tab:
-                st.error(f"Error analyzing file: {result['error']}")
-            continue
-        
-        with tab:
-            st.subheader(f"Analysis of {result['log_file_name']}")
-            st.write(f"Total Lines Processed: {result['total_lines']:,}")
-            st.write(f"Total Issues Found: {result['issues_found']:,}")
+        for i, tab in enumerate(tabs):
+            result = st.session_state.analysis_results[i]
             
-            # Show AI status if available
-            if "ai_analysis" in result and "training_status" in result["ai_analysis"]:
-                ai_status = "Trained" if result["ai_analysis"]["training_status"]["is_trained"] else "Learning"
-                st.write(f"AI Analysis: Enabled ({ai_status})")
-                
-                if "summary" in result["ai_analysis"]:
-                    st.write(f"AI-Detected Anomalies: {result['ai_analysis']['summary'].get('anomaly_count', 0)}")
-                    st.write(f"Pattern Groups: {result['ai_analysis']['summary'].get('cluster_count', 0)}")
-            
-            # Create filter for QA relevance
-            col1, col2 = st.columns(2)
-            with col1:
-                qa_only = st.checkbox("Show QA Relevant Issues Only", key=f"qa_only_{i}")
-            with col2:
-                if "ai_analysis" in result:
-                    anomalies_only = st.checkbox("Show AI-Detected Anomalies Only", key=f"anomalies_{i}")
-                else:
-                    anomalies_only = False
-            
-            # Get filtered issues
-            filtered_issues = filter_issues_by_relevance(result['issue_entries'], qa_only)
-            
-            # Further filter by anomalies if requested
-            if anomalies_only and "ai_analysis" in result:
-                filtered_issues = [entry for entry in filtered_issues if entry.get('is_anomaly', False)]
-            
-            if not filtered_issues:
-                st.info("No issues found with current filter settings.")
+            # Skip if there was an error with this file
+            if "error" in result:
+                with tab:
+                    st.error(f"Error analyzing file: {result['error']}")
                 continue
             
-            # Allow additional filtering
-            with st.expander("Filter Options"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    filter_severity = st.multiselect(
-                        "Filter by Severity",
-                        options=['F', 'E', 'W', 'I', 'D', 'V'],
-                        default=['F', 'E', 'W'],
-                        key=f"severity_{i}"
-                    )
-                with col2:
-                    # Get unique components from the issues
-                    all_components = sorted(set(entry['component'] for entry in filtered_issues))
-                    filter_components = st.multiselect(
-                        "Filter by Component",
-                        options=all_components,
-                        key=f"components_{i}"
-                    )
-                    
-                # Add cluster filter if AI analysis was performed
-                if "ai_analysis" in result and any("cluster_id" in entry for entry in filtered_issues):
-                    cluster_ids = sorted(set(entry.get('cluster_id') for entry in filtered_issues if entry.get('cluster_id') is not None))
-                    
-                    if cluster_ids:
-                        filter_clusters = st.multiselect(
-                            "Filter by Pattern Group ID",
-                            options=cluster_ids,
-                            key=f"clusters_{i}"
-                        )
-                    else:
-                        filter_clusters = []
-                else:
-                    filter_clusters = []
+            with tab:
+                display_single_result(result, i)
+    else:
+        # For a single result, don't use tabs
+        result = st.session_state.analysis_results[0]
+        if "error" in result:
+            st.error(f"Error analyzing file: {result['error']}")
+        else:
+            display_single_result(result, 0)
+
+def display_single_result(result, i):
+    """Display analysis results for a single log file"""
+    st.subheader(f"Analysis of {result['log_file_name']}")
+    st.write(f"Total Lines Processed: {result['total_lines']:,}")
+    st.write(f"Total Issues Found: {result['issues_found']:,}")
+    
+    # Show AI status if available
+    if "ai_analysis" in result and "training_status" in result["ai_analysis"]:
+        ai_status = "Trained" if result["ai_analysis"]["training_status"]["is_trained"] else "Learning"
+        st.write(f"AI Analysis: Enabled ({ai_status})")
+        
+        if "summary" in result["ai_analysis"]:
+            st.write(f"AI-Detected Anomalies: {result['ai_analysis']['summary'].get('anomaly_count', 0)}")
+            st.write(f"Pattern Groups: {result['ai_analysis']['summary'].get('cluster_count', 0)}")
+    
+    # Create filter for QA relevance
+    col1, col2 = st.columns(2)
+    with col1:
+        qa_only = st.checkbox("Show QA Relevant Issues Only", key=f"qa_only_{i}")
+    with col2:
+        if "ai_analysis" in result:
+            anomalies_only = st.checkbox("Show AI-Detected Anomalies Only", key=f"anomalies_{i}")
+        else:
+            anomalies_only = False
+    
+    # Get filtered issues
+    filtered_issues = filter_issues_by_relevance(result['issue_entries'], qa_only)
+    
+    # Further filter by anomalies if requested
+    if anomalies_only and "ai_analysis" in result:
+        filtered_issues = [entry for entry in filtered_issues if entry.get('is_anomaly', False)]
+    
+    if not filtered_issues:
+        st.info("No issues found with current filter settings.")
+        return
+    
+    # Allow additional filtering
+    with st.expander("Filter Options"):
+        col1, col2 = st.columns(2)
+        with col1:
+            filter_severity = st.multiselect(
+                "Filter by Severity",
+                options=['F', 'E', 'W', 'I', 'D', 'V'],
+                default=['F', 'E', 'W'],
+                key=f"severity_{i}"
+            )
+        with col2:
+            # Get unique components from the issues
+            all_components = sorted(set(entry['component'] for entry in filtered_issues))
+            filter_components = st.multiselect(
+                "Filter by Component",
+                options=all_components,
+                key=f"components_{i}"
+            )
             
-            # Apply filters
-            if filter_severity:
-                filtered_issues = [entry for entry in filtered_issues if entry['level'] in filter_severity]
+        # Add cluster filter if AI analysis was performed
+        if "ai_analysis" in result and any("cluster_id" in entry for entry in filtered_issues):
+            cluster_ids = sorted(set(entry.get('cluster_id') for entry in filtered_issues if entry.get('cluster_id') is not None))
             
-            if filter_components:
-                filtered_issues = [entry for entry in filtered_issues if entry['component'] in filter_components]
-                
-            if filter_clusters:
-                filtered_issues = [entry for entry in filtered_issues if entry.get('cluster_id') in filter_clusters]
-            
-            # Display filtered issues in a DataFrame
-            if filtered_issues:
-                df = pd.DataFrame(filtered_issues)
-                
-                # Determine columns to display
-                base_columns = ['timestamp', 'level', 'component', 'message', 'pid', 'tid']
-                ai_columns = []
-                
-                # Add AI-specific columns if they exist
-                if "ai_analysis" in result:
-                    if any('is_anomaly' in entry for entry in filtered_issues):
-                        ai_columns.append('is_anomaly')
-                    if any('anomaly_reason' in entry for entry in filtered_issues):
-                        ai_columns.append('anomaly_reason')
-                    if any('cluster_id' in entry for entry in filtered_issues):
-                        ai_columns.append('cluster_id')
-                
-                qa_columns = ['is_qa_relevant', 'matched_qa_keywords']
-                
-                # Combine and filter columns that exist in the DataFrame
-                all_columns = base_columns + ai_columns + qa_columns
-                columns = [col for col in all_columns if col in df.columns]
-                
-                # Display the DataFrame
-                st.dataframe(df[columns], use_container_width=True)
-                st.write(f"Displaying {len(filtered_issues)} issues")
-                
-                # Display anomaly details if AI analysis was used
-                if "ai_analysis" in result and anomalies_only:
-                    st.subheader("Anomaly Details")
-                    st.write("These logs were flagged as anomalies by the AI because they represent unusual patterns or behaviors.")
-                    
-                    for entry in filtered_issues[:10]:  # Limit to first 10 for readability
-                        with st.expander(f"{entry['timestamp']} - {entry['component']} - {entry['level']}"):
-                            st.write(f"**Message:** {entry['message']}")
-                            if 'anomaly_reason' in entry:
-                                st.write(f"**Anomaly Reason:** {entry['anomaly_reason']}")
-                            st.write(f"**Process ID:** {entry['pid']}")
-                            st.write(f"**Thread ID:** {entry['tid']}")
-                
-                # Display pattern group details if AI analysis was used
-                if "ai_analysis" in result and filter_clusters:
-                    st.subheader("Pattern Group Details")
-                    st.write("Messages in the same pattern group represent similar types of issues.")
-                    
-                    for cluster_id in filter_clusters:
-                        cluster_entries = [entry for entry in filtered_issues if entry.get('cluster_id') == cluster_id]
-                        if cluster_entries:
-                            with st.expander(f"Pattern Group {cluster_id} - {len(cluster_entries)} entries"):
-                                st.write("**Sample messages in this group:**")
-                                for entry in cluster_entries[:5]:  # Show first 5 examples
-                                    st.write(f"- {entry['message']}")
+            if cluster_ids:
+                filter_clusters = st.multiselect(
+                    "Filter by Pattern Group ID",
+                    options=cluster_ids,
+                    key=f"clusters_{i}"
+                )
             else:
-                st.info("No issues match the selected filters.")
+                filter_clusters = []
+        else:
+            filter_clusters = []
+    
+    # Apply filters
+    if filter_severity:
+        filtered_issues = [entry for entry in filtered_issues if entry['level'] in filter_severity]
+    
+    if filter_components:
+        filtered_issues = [entry for entry in filtered_issues if entry['component'] in filter_components]
+        
+    if filter_clusters:
+        filtered_issues = [entry for entry in filtered_issues if entry.get('cluster_id') in filter_clusters]
+    
+    # Display filtered issues in a DataFrame
+    if filtered_issues:
+        df = pd.DataFrame(filtered_issues)
+        
+        # Determine columns to display
+        base_columns = ['timestamp', 'level', 'component', 'message', 'pid', 'tid']
+        ai_columns = []
+        
+        # Add AI-specific columns if they exist
+        if "ai_analysis" in result:
+            if any('is_anomaly' in entry for entry in filtered_issues):
+                ai_columns.append('is_anomaly')
+            if any('anomaly_reason' in entry for entry in filtered_issues):
+                ai_columns.append('anomaly_reason')
+            if any('cluster_id' in entry for entry in filtered_issues):
+                ai_columns.append('cluster_id')
+        
+        qa_columns = ['is_qa_relevant', 'matched_qa_keywords']
+        
+        # Combine and filter columns that exist in the DataFrame
+        all_columns = base_columns + ai_columns + qa_columns
+        columns = [col for col in all_columns if col in df.columns]
+        
+        # Display the DataFrame
+        st.dataframe(df[columns], use_container_width=True)
+        st.write(f"Displaying {len(filtered_issues)} issues")
+        
+        # Display anomaly details if AI analysis was used
+        if "ai_analysis" in result and anomalies_only:
+            st.subheader("Anomaly Details")
+            st.write("These logs were flagged as anomalies by the AI because they represent unusual patterns or behaviors.")
+            
+            for entry in filtered_issues[:10]:  # Limit to first 10 for readability
+                with st.expander(f"{entry['timestamp']} - {entry['component']} - {entry['level']}"):
+                    st.write(f"**Message:** {entry['message']}")
+                    if 'anomaly_reason' in entry:
+                        st.write(f"**Anomaly Reason:** {entry['anomaly_reason']}")
+                    st.write(f"**Process ID:** {entry['pid']}")
+                    st.write(f"**Thread ID:** {entry['tid']}")
+        
+        # Display pattern group details if AI analysis was used
+        if "ai_analysis" in result and filter_clusters:
+            st.subheader("Pattern Group Details")
+            st.write("Messages in the same pattern group represent similar types of issues.")
+            
+            for cluster_id in filter_clusters:
+                cluster_entries = [entry for entry in filtered_issues if entry.get('cluster_id') == cluster_id]
+                if cluster_entries:
+                    with st.expander(f"Pattern Group {cluster_id} - {len(cluster_entries)} entries"):
+                        st.write("**Sample messages in this group:**")
+                        for entry in cluster_entries[:5]:  # Show first 5 examples
+                            st.write(f"- {entry['message']}")
+    else:
+        st.info("No issues match the selected filters.")
 
 def display_ai_insights():
     """Display AI-specific insights and findings"""
@@ -526,28 +535,56 @@ def main():
             display_detailed_issues()
             
             # Report generation section
-            st.header("Report Generation")
-            
-            if st.button("Generate Reports") or st.session_state.reports_generated:
-                with st.spinner("Generating reports..."):
-                    # Generate reports
-                    csv_paths = generate_individual_csv_reports(st.session_state.analysis_results)
-                    qa_report_path, dev_report_path = generate_summary_reports_targetted(st.session_state.analysis_results)
-                    
-                    st.session_state.reports_generated = True
-                
-                # Display report links
-                st.success("Reports generated successfully!")
-                
-                st.write("#### CSV Reports")
-                for path in csv_paths:
-                    st.write(f"- {path}")
-                
-                st.write("#### Summary Reports")
-                if qa_report_path:
-                    st.write(f"- QA Summary: {qa_report_path}")
-                if dev_report_path:
-                    st.write(f"- Developer Summary: {dev_report_path}")
+# Report generation section
+st.header("Report Generation")
+
+if st.button("Generate Reports") or st.session_state.reports_generated:
+    with st.spinner("Generating reports..."):
+        # Generate reports
+        csv_paths = generate_individual_csv_reports(st.session_state.analysis_results)
+        qa_report_path, dev_report_path = generate_summary_reports_targetted(st.session_state.analysis_results)
+        
+        st.session_state.reports_generated = True
+    
+    # Display report links
+    st.success("Reports generated successfully!")
+    
+    # Add download buttons for CSV reports
+    st.write("#### CSV Reports")
+    for path in csv_paths:
+        with open(path, "rb") as file:
+            st.download_button(
+                label=f"Download {path.name}",
+                data=file,
+                file_name=path.name,
+                mime="text/csv",
+                key=f"csv_{path.name}"  # Add a unique key for each button
+            )
+        st.write(f"- {path}")  # Keep the original path display for reference
+    
+    # Add download buttons for summary reports
+    st.write("#### Summary Reports")
+    if qa_report_path:
+        with open(qa_report_path, "rb") as file:
+            st.download_button(
+                label=f"Download QA Summary",
+                data=file,
+                file_name=qa_report_path.name,
+                mime="text/markdown",
+                key="qa_summary"
+            )
+        st.write(f"- QA Summary: {qa_report_path}")  # Keep the original path display
+    
+    if dev_report_path:
+        with open(dev_report_path, "rb") as file:
+            st.download_button(
+                label=f"Download Developer Summary",
+                data=file,
+                file_name=dev_report_path.name,
+                mime="text/markdown",
+                key="dev_summary"
+            )
+        st.write(f"- Developer Summary: {dev_report_path}")  # Keep the original path display
 
 if __name__ == "__main__":
     main()

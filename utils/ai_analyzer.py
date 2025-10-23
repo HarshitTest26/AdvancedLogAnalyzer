@@ -177,8 +177,12 @@ class AutoLogAI:
             # Use the trained model to predict anomalies
             df['anomaly_score'] = self.anomaly_model.decision_function(features)
             df['is_anomaly'] = self.anomaly_model.predict(features) == -1
+            # Initialize rare_components for the trained model case
+            component_counts = df['component'].value_counts()
+            rare_components = component_counts[component_counts < 2].index
         
         # Add information about why it's considered an anomaly
+        # Define the anomaly_reason function inside detect_anomalies so it has access to rare_components
         def anomaly_reason(row):
             if not row['is_anomaly']:
                 return None
