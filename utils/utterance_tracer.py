@@ -17,7 +17,9 @@ class UtteranceTracer:
             r'WakewordDetected.*payload.*wakeword.*ALEXA',  # Add for Alexa detection
             r'topic=SpeechRecognizer.*action=WakewordDetected',  # Common in Alexa logs
             r'DialogStateChanged.*state.*LISTENING',         # Add for dialog state changes
-            r'payload=\{"wakeword":"ALEXA"\}'  # Add this line for direct payload matching
+            r'payload=\{"wakeword":"ALEXA"\}',  # Add this line for direct payload matching
+            r'DialogStateChangedMessages.*state LISTENING',  # Your specific log format
+            r'AutoVoiceChrome state changed LISTENING'       # Another pattern from your logs
         ]
         
         # Add message ID extraction patterns for different formats
@@ -30,10 +32,10 @@ class UtteranceTracer:
         
         # Enhanced dialog state patterns for Alexa logs
         self.dialog_state_patterns = {
-            'LISTENING': re.compile(r'(DialogState.*LISTENING|setAnimationState\s+LISTENING|state[=:]?\s*LISTENING|AutoVoiceChrome.*state changed LISTENING)', re.IGNORECASE),
-            'THINKING': re.compile(r'(DialogState.*THINKING|setAnimationState\s+THINKING|state[=:]?\s*THINKING|AutoVoiceChrome.*state changed THINKING)', re.IGNORECASE),
-            'SPEAKING': re.compile(r'(DialogState.*SPEAKING|setAnimationState\s+SPEAKING|state[=:]?\s*SPEAKING|AutoVoiceChrome.*state changed SPEAKING)', re.IGNORECASE),
-            'IDLE': re.compile(r'(DialogState.*IDLE|setAnimationState\s+IDLE|state[=:]?\s*IDLE|AutoVoiceChrome.*state changed IDLE)', re.IGNORECASE)
+            'LISTENING': re.compile(r'(DialogState.*LISTENING|setAnimationState\s+LISTENING|state[=:]?\s*LISTENING|AutoVoiceChrome.*state changed LISTENING|DialogStateChangedMessages.*state LISTENING)', re.IGNORECASE),
+            'THINKING': re.compile(r'(DialogState.*THINKING|setAnimationState\s+THINKING|state[=:]?\s*THINKING|AutoVoiceChrome.*state changed THINKING|DialogStateChangedMessages.*state THINKING)', re.IGNORECASE),
+            'SPEAKING': re.compile(r'(DialogState.*SPEAKING|setAnimationState\s+SPEAKING|state[=:]?\s*SPEAKING|AutoVoiceChrome.*state changed SPEAKING|DialogStateChangedMessages.*state SPEAKING)', re.IGNORECASE),
+            'IDLE': re.compile(r'(DialogState.*IDLE|setAnimationState\s+IDLE|state[=:]?\s*IDLE|AutoVoiceChrome.*state changed IDLE|DialogStateChangedMessages.*state IDLE)', re.IGNORECASE)
         }
         
         # Session ID patterns - looking for long integer IDs like 520618634416
@@ -91,16 +93,26 @@ class UtteranceTracer:
                 pids = set(base_entries['pid'].dropna())
                 tids = set(base_entries['tid'].dropna())
                 
-                # Find timestamp range (with buffer)
-                min_time = min(base_entries['timestamp']) - pd.Timedelta(seconds=2)
-                max_time = max(base_entries['timestamp']) + pd.Timedelta(seconds=5)
-                
-                # Add any entries that match PID/TID within the time window
-                for idx, row in df.iterrows():
-                    if idx not in indices:
-                        if (row['pid'] in pids or row['tid'] in tids) and \
-                           min_time <= row['timestamp'] <= max_time:
-                            sessions[session_id].append(idx)
+                # Find timestamp range (with buffer) - ensure timestamps are datetime objects
+                try:
+                    base_timestamps = pd.to_datetime(base_entries['timestamp'], errors='coerce')
+                    min_time = base_timestamps.min() - pd.Timedelta(seconds=2)
+                    max_time = base_timestamps.max() + pd.Timedelta(seconds=5)
+                    
+                    # Add any entries that match PID/TID within the time window
+                    for idx, row in df.iterrows():
+                        if idx not in indices:
+                            try:
+                                row_timestamp = pd.to_datetime(row['timestamp'], errors='coerce')
+                                if (row['pid'] in pids or row['tid'] in tids) and \
+                                   pd.notna(row_timestamp) and min_time <= row_timestamp <= max_time:
+                                    sessions[session_id].append(idx)
+                            except (TypeError, ValueError):
+                                # Skip entries with invalid timestamps
+                                continue
+                except (TypeError, ValueError):
+                    # If timestamp conversion fails, skip this session's expansion
+                    continue
         
         # Clean up abandoned sessions
         sessions = self.cleanup_abandoned_sessions(sessions)
@@ -151,12 +163,35 @@ class UtteranceTracer:
             # Determine final dialog state
             final_state = dialog_states[-1]['state'] if dialog_states else 'UNKNOWN'
             
+            # Calculate timestamps and duration safely
+            try:
+                timestamps = pd.to_datetime(session_df['timestamp'], errors='coerce')
+                valid_timestamps = timestamps.dropna()
+                
+                if len(valid_timestamps) >= 2:
+                    timestamp_start = valid_timestamps.min()
+                    timestamp_end = valid_timestamps.max()
+                    duration_ms = (timestamp_end - timestamp_start).total_seconds() * 1000
+                elif len(valid_timestamps) == 1:
+                    timestamp_start = timestamp_end = valid_timestamps.iloc[0]
+                    duration_ms = 0
+                else:
+                    # Fallback to string values
+                    timestamp_start = session_df['timestamp'].iloc[0] if len(session_df) > 0 else 'Unknown'
+                    timestamp_end = session_df['timestamp'].iloc[-1] if len(session_df) > 0 else 'Unknown'
+                    duration_ms = 0
+            except Exception:
+                # Fallback to string values
+                timestamp_start = session_df['timestamp'].iloc[0] if len(session_df) > 0 else 'Unknown'
+                timestamp_end = session_df['timestamp'].iloc[-1] if len(session_df) > 0 else 'Unknown'
+                duration_ms = 0
+            
             session_details.append({
                 'session_id': session_id,
                 'utterance': utterance_text,
-                'timestamp_start': session_df['timestamp'].min(),
-                'timestamp_end': session_df['timestamp'].max(),
-                'duration_ms': (session_df['timestamp'].max() - session_df['timestamp'].min()).total_seconds() * 1000,
+                'timestamp_start': timestamp_start,
+                'timestamp_end': timestamp_end,
+                'duration_ms': duration_ms,
                 'has_errors': has_errors,
                 'components': components,
                 'entries': len(session_df),
@@ -258,12 +293,23 @@ class UtteranceTracer:
         for session_id, session_df in sessions.items():
             # Calculate duration
             try:
-                min_time = min(session_df['timestamp'])
-                max_time = max(session_df['timestamp'])
-                duration_seconds = (max_time - min_time).total_seconds()
+                # Ensure timestamps are datetime objects
+                timestamps = pd.to_datetime(session_df['timestamp'], errors='coerce')
+                valid_timestamps = timestamps.dropna()
                 
-                # Only keep sessions under the maximum duration
-                if duration_seconds <= max_duration_seconds:
+                if len(valid_timestamps) >= 2:
+                    min_time = valid_timestamps.min()
+                    max_time = valid_timestamps.max()
+                    duration_seconds = (max_time - min_time).total_seconds()
+                    
+                    # Only keep sessions under the maximum duration
+                    if duration_seconds <= max_duration_seconds:
+                        cleaned_sessions[session_id] = session_df
+                    else:
+                        # Session too long, skip it
+                        continue
+                else:
+                    # If we have less than 2 valid timestamps, keep the session
                     cleaned_sessions[session_id] = session_df
             except Exception:
                 # If we can't calculate time, just keep the session
