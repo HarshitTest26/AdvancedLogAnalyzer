@@ -5,6 +5,8 @@ from pathlib import Path
 import logging
 from datetime import datetime
 
+from .utterance_tracer import UtteranceTracer
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -244,3 +246,73 @@ def filter_issues_by_relevance(issue_entries, qa_only=False):
     if qa_only:
         return [entry for entry in issue_entries if entry['is_qa_relevant']]
     return issue_entries
+
+
+def enhance_log_analysis(parsed_df):
+    """
+    Enhances the parsed log dataframe with utterance tracking
+    and correlation features.
+    
+    Args:
+        parsed_df: DataFrame of parsed log entries
+        
+    Returns:
+        Enhanced DataFrame with session IDs and correlation info
+    """
+    # Initialize utterance tracer
+    tracer = UtteranceTracer()
+    
+    # Identify all utterance sessions
+    sessions = tracer.identify_utterance_sessions(parsed_df)
+    
+    # Extract detailed session information
+    session_details = tracer.extract_session_details(sessions)
+    
+    # Add session ID to the original dataframe
+    parsed_df['session_id'] = None
+    for session_id, session_df in sessions.items():
+        for idx in session_df.index:
+            parsed_df.at[idx, 'session_id'] = session_id
+    
+    return parsed_df, session_details
+
+
+def extract_key_utterance_components(parsed_df):
+    """
+    Extracts key components related to the voice assistant workflow
+    to help understand the processing pipeline.
+    
+    Args:
+        parsed_df: DataFrame of parsed log entries
+        
+    Returns:
+        Dict of component information
+    """
+    components = {
+        'voice_activation': [],
+        'nlu_processing': [],
+        'action_execution': [],
+        'response_generation': []
+    }
+    
+    # Voice activation components (AHE-AHAP, etc.)
+    voice_components = parsed_df[parsed_df['tag'].str.contains('AHAP|Voice|Audio', case=False, na=False)]
+    if not voice_components.empty:
+        components['voice_activation'] = voice_components['tag'].unique().tolist()
+    
+    # NLU components
+    nlu_components = parsed_df[parsed_df['tag'].str.contains('NLU|Intent|LRO', case=False, na=False)]
+    if not nlu_components.empty:
+        components['nlu_processing'] = nlu_components['tag'].unique().tolist()
+    
+    # Action execution components
+    action_components = parsed_df[parsed_df['tag'].str.contains('vehicle|HAL|MQTT|TC', case=False, na=False)]
+    if not action_components.empty:
+        components['action_execution'] = action_components['tag'].unique().tolist()
+    
+    # Response generation
+    response_components = parsed_df[parsed_df['tag'].str.contains('TTS|Media|Player|AACS', case=False, na=False)]
+    if not response_components.empty:
+        components['response_generation'] = response_components['tag'].unique().tolist()
+    
+    return components

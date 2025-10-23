@@ -8,7 +8,7 @@ import logging
 from datetime import datetime
 
 # Import our utility modules
-from utils.log_analyzer import analyze_logs_refactored, filter_issues_by_relevance
+from utils.log_analyzer import analyze_logs_refactored, filter_issues_by_relevance, enhance_log_analysis, extract_key_utterance_components
 from utils.report_generator import generate_individual_csv_reports, generate_summary_reports_targetted
 from utils.ai_analyzer import AutoLogAI
 
@@ -42,12 +42,77 @@ if 'reports_generated' not in st.session_state:
 if 'ai_enabled' not in st.session_state:
     st.session_state.ai_enabled = True  # Enable AI by default
 
+if 'selected_session_id' not in st.session_state:
+    st.session_state.selected_session_id = None
+
+if 'selected_file' not in st.session_state:
+    st.session_state.selected_file = None
+
 def reset_analysis():
     """Reset analysis results"""
     st.session_state.analysis_results = []
     st.session_state.reports_generated = False
 
-def perform_analysis(uploaded_files, use_ai=True):
+def process_utterances(log_result, enable_utterance_analysis=True):
+    """
+    Process utterance flows in the log data
+    
+    Args:
+        log_result: The result from analyze_logs_refactored
+        enable_utterance_analysis: Whether to process utterances
+    
+    Returns:
+        Enhanced log_result with utterance data
+    """
+    if not enable_utterance_analysis or "error" in log_result:
+        return log_result
+    
+    try:
+        # Convert issue entries to DataFrame for utterance analysis
+        if log_result.get('issue_entries'):
+            df = pd.DataFrame(log_result['issue_entries'])
+            
+            # Ensure required columns exist with proper data types
+            if 'timestamp' not in df.columns:
+                # Create timestamp from date and time if available
+                if 'date' in df.columns and 'time' in df.columns:
+                    df['timestamp'] = pd.to_datetime(df['date'] + ' ' + df['time'], format='%m-%d %H:%M:%S.%f', errors='coerce')
+                else:
+                    logger.warning(f"Cannot create timestamps for utterance analysis in {log_result.get('log_file_name', 'unknown file')}")
+                    return log_result  # Skip utterance processing if we can't create timestamps
+            
+            # Ensure tag column exists (mapped from component)
+            if 'tag' not in df.columns and 'component' in df.columns:
+                df['tag'] = df['component']
+            
+            # Ensure required columns exist
+            required_columns = ['timestamp', 'tag', 'message', 'pid', 'tid', 'level']
+            if all(col in df.columns for col in required_columns):
+                # Enhanced parsing with utterance tracing
+                enhanced_df, utterance_sessions = enhance_log_analysis(df)
+                
+                # Add to the result
+                log_result['parsed_data'] = enhanced_df
+                log_result['utterance_sessions'] = utterance_sessions
+                
+                # Extract key components for the voice pipeline
+                log_result['voice_components'] = extract_key_utterance_components(enhanced_df)
+                
+                # Count statistics
+                log_result['utterance_count'] = len(utterance_sessions)
+                log_result['successful_utterances'] = len([s for s in utterance_sessions if not s['has_errors']])
+                
+                logger.info(f"Processed {len(utterance_sessions)} utterance sessions for {log_result.get('log_file_name', 'unknown file')}")
+            else:
+                missing_cols = [col for col in required_columns if col not in df.columns]
+                logger.warning(f"Missing required columns for utterance analysis: {missing_cols}")
+                
+    except Exception as e:
+        logger.error(f"Error processing utterances for {log_result.get('log_file_name', 'unknown file')}: {str(e)}")
+    
+    return log_result
+
+def perform_analysis(uploaded_files, use_ai=True, enable_utterance_analysis=True):
     """
     Process and analyze uploaded log files
     
@@ -96,6 +161,11 @@ def perform_analysis(uploaded_files, use_ai=True):
                             'summary': ai_result['summary'],
                             'training_status': ai_analyzer.get_training_status()
                         }
+            
+            # Process utterances if enabled
+            if enable_utterance_analysis and "error" not in result:
+                with st.spinner(f"Processing utterance flows in {uploaded_file.name}..."):
+                    result = process_utterances(result, enable_utterance_analysis)
             
             st.session_state.analysis_results.append(result)
         
@@ -478,6 +548,280 @@ def display_ai_insights():
             
             break  # Only show status once
 
+def display_utterance_analysis():
+    """
+    Displays the utterance analysis section in the Streamlit UI.
+    """
+    st.header("🔊 Utterance Flow Analysis")
+    
+    if not st.session_state.analysis_results:
+        st.warning("No analysis results available. Please upload and analyze logs first.")
+        return
+    
+    # Process results with utterance enhancement
+    enhanced_results = []
+    all_sessions = []
+    
+    for result in st.session_state.analysis_results:
+        if "error" in result:
+            continue
+            
+        try:
+            # Convert issue entries to DataFrame for utterance analysis
+            if result.get('issue_entries'):
+                df = pd.DataFrame(result['issue_entries'])
+                
+                # Ensure required columns exist with proper data types
+                if 'timestamp' not in df.columns:
+                    # Create timestamp from date and time if available
+                    if 'date' in df.columns and 'time' in df.columns:
+                        df['timestamp'] = pd.to_datetime(df['date'] + ' ' + df['time'], format='%m-%d %H:%M:%S.%f', errors='coerce')
+                    else:
+                        continue  # Skip if we can't create timestamps
+                
+                # Ensure tag column exists (mapped from component)
+                if 'tag' not in df.columns and 'component' in df.columns:
+                    df['tag'] = df['component']
+                
+                # Ensure required columns exist
+                required_columns = ['timestamp', 'tag', 'message', 'pid', 'tid', 'level']
+                if all(col in df.columns for col in required_columns):
+                    # Apply utterance enhancement
+                    enhanced_df, session_details = enhance_log_analysis(df)
+                    
+                    # Store enhanced results
+                    enhanced_result = result.copy()
+                    enhanced_result['utterance_sessions'] = session_details
+                    enhanced_result['enhanced_df'] = enhanced_df
+                    enhanced_results.append(enhanced_result)
+                    
+                    # Collect sessions for display
+                    for session in session_details:
+                        session['log_file'] = result['log_file_name']
+                        all_sessions.append(session)
+        except Exception as e:
+            st.warning(f"Could not process utterance analysis for {result.get('log_file_name', 'unknown file')}: {str(e)}")
+            continue
+    
+    if not all_sessions:
+        st.info("No utterance sessions were detected in the logs. This may be because:")
+        st.write("- The logs don't contain voice command processing")
+        st.write("- The utterance start patterns weren't found")
+        st.write("- The log format doesn't include required fields")
+        return
+    
+    # Show summary stats
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Utterances", len(all_sessions))
+    with col2:
+        successful = len([s for s in all_sessions if not s['has_errors']])
+        st.metric("Successful Utterances", successful)
+    with col3:
+        if all_sessions:
+            success_rate = (successful / len(all_sessions)) * 100
+            st.metric("Success Rate", f"{success_rate:.1f}%")
+    with col4:
+        if all_sessions:
+            avg_duration = sum(s['duration_ms'] for s in all_sessions) / len(all_sessions)
+            st.metric("Avg Duration", f"{avg_duration:.0f}ms")
+    
+    # Create visualization of utterance durations
+    st.subheader("Utterance Processing Times")
+    
+    if len(all_sessions) > 0:
+        fig, ax = plt.subplots(figsize=(12, 8))
+        
+        # Prepare data for plotting
+        durations = [s['duration_ms'] for s in all_sessions]
+        has_errors_list = [s['has_errors'] for s in all_sessions]
+        utterances = [s['utterance'][:40] + '...' if len(s['utterance']) > 40 else s['utterance'] for s in all_sessions]
+        
+        # Create color-coded bar plot
+        colors = ['salmon' if error else 'lightgreen' for error in has_errors_list]
+        bars = ax.barh(range(len(utterances)), durations, color=colors)
+        
+        ax.set_yticks(range(len(utterances)))
+        ax.set_yticklabels(utterances)
+        ax.set_xlabel("Duration (ms)")
+        ax.set_title("Utterance Processing Duration")
+        
+        # Add legend
+        from matplotlib.patches import Rectangle
+        error_patch = Rectangle((0,0),1,1, color='salmon', label='Had Errors')
+        success_patch = Rectangle((0,0),1,1, color='lightgreen', label='Successful')
+        ax.legend(handles=[success_patch, error_patch])
+        
+        plt.tight_layout()
+        st.pyplot(fig)
+    
+    # Component pipeline analysis
+    st.subheader("Voice Processing Pipeline Analysis")
+    
+    if enhanced_results:
+        # Analyze components across all files
+        all_components_data = []
+        for result in enhanced_results:
+            if 'enhanced_df' in result:
+                components = extract_key_utterance_components(result['enhanced_df'])
+                all_components_data.append(components)
+        
+        if all_components_data:
+            # Combine all component data
+            combined_components = {
+                'voice_activation': [],
+                'nlu_processing': [],
+                'action_execution': [],
+                'response_generation': []
+            }
+            
+            for comp_data in all_components_data:
+                for category, components in comp_data.items():
+                    combined_components[category].extend(components)
+            
+            # Remove duplicates
+            for category in combined_components:
+                combined_components[category] = list(set(combined_components[category]))
+            
+            # Display pipeline stages
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Voice Activation Components:**")
+                for comp in combined_components['voice_activation'][:10]:  # Limit display
+                    st.write(f"• {comp}")
+                
+                st.write("**NLU Processing Components:**")
+                for comp in combined_components['nlu_processing'][:10]:
+                    st.write(f"• {comp}")
+            
+            with col2:
+                st.write("**Action Execution Components:**")
+                for comp in combined_components['action_execution'][:10]:
+                    st.write(f"• {comp}")
+                
+                st.write("**Response Generation Components:**")
+                for comp in combined_components['response_generation'][:10]:
+                    st.write(f"• {comp}")
+    
+    # Show individual utterance sessions
+    st.subheader("Individual Utterance Sessions")
+    
+    if len(all_sessions) > 10:
+        st.write(f"Showing first 10 of {len(all_sessions)} sessions")
+        sessions_to_show = all_sessions[:10]
+    else:
+        sessions_to_show = all_sessions
+    
+    for i, session in enumerate(sessions_to_show):
+        status = "❌ Failed" if session['has_errors'] else "✅ Successful"
+        duration_color = "🔴" if session['duration_ms'] > 5000 else "🟡" if session['duration_ms'] > 2000 else "🟢"
+        
+        with st.expander(f"{status} {duration_color}: \"{session['utterance']}\" ({session['log_file']})"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write(f"**Session ID:** {session['session_id']}")
+                st.write(f"**Duration:** {session['duration_ms']:.2f} ms")
+                st.write(f"**Entry Count:** {session['entries']}")
+            
+            with col2:
+                st.write(f"**Start Time:** {session['timestamp_start']}")
+                st.write(f"**End Time:** {session['timestamp_end']}")
+                st.write(f"**Has Errors:** {'Yes' if session['has_errors'] else 'No'}")
+            
+            st.write(f"**Components Involved:** {', '.join(session['components'][:10])}")
+            if len(session['components']) > 10:
+                st.write(f"... and {len(session['components']) - 10} more")
+            
+            # Show session timing analysis
+            if session['duration_ms'] > 3000:
+                st.warning(f"⚠️ Long processing time detected ({session['duration_ms']:.0f}ms)")
+            
+            if session['has_errors']:
+                st.error("🚨 This utterance session encountered errors")
+            
+            # Add button to view full trace
+            if st.button(f"View Full Trace", key=f"trace_{i}_{session['session_id']}"):
+                st.session_state.selected_session_id = session['session_id']
+                st.session_state.selected_file = session['log_file']
+                st.rerun()
+
+def display_full_trace():
+    """
+    Displays the full trace of an utterance session when selected.
+    """
+    if not hasattr(st.session_state, 'selected_session_id') or not st.session_state.selected_session_id:
+        return
+    
+    st.header(f"Full Trace for Session {st.session_state.selected_session_id}")
+    
+    # Find the selected session data
+    for result in st.session_state.analysis_results:
+        if "error" in result or result.get('log_file_name') != st.session_state.selected_file:
+            continue
+        
+        # Find all entries for this session
+        if "parsed_data" in result:
+            session_data = result["parsed_data"][
+                result["parsed_data"]["session_id"] == st.session_state.selected_session_id
+            ]
+            
+            if not session_data.empty:
+                # Allow user to close this view
+                if st.button("Close Full Trace"):
+                    st.session_state.selected_session_id = None
+                    st.session_state.selected_file = None
+                    st.rerun()
+                    return
+                
+                # Display timeline view
+                st.subheader("Timeline View")
+                
+                # Create a table with all entries
+                session_table = session_data[['timestamp', 'level', 'tag', 'message']].copy()
+                
+                # Highlight errors and warnings
+                def highlight_level(row):
+                    if row['level'] == 'E':
+                        return ['background-color: #ffcccc'] * len(row)
+                    elif row['level'] == 'W':
+                        return ['background-color: #ffffcc'] * len(row)
+                    elif row['level'] == 'F':
+                        return ['background-color: #ff9999'] * len(row)
+                    return [''] * len(row)
+                
+                st.dataframe(
+                    session_table.style.apply(highlight_level, axis=1),
+                    height=400,
+                    use_container_width=True
+                )
+                
+                # Show key events in the timeline
+                st.subheader("Key Events")
+                
+                # Filter for important entries (errors, warnings, state changes)
+                key_events = session_data[
+                    (session_data['level'].isin(['E', 'W', 'F'])) | 
+                    (session_data['message'].str.contains('state|response|result|complete', case=False, na=False))
+                ]
+                
+                if not key_events.empty:
+                    for _, event in key_events.iterrows():
+                        level_icon = "🔴" if event['level'] == 'E' or event['level'] == 'F' else "🟡" if event['level'] == 'W' else "🔵"
+                        st.write(f"{level_icon} **{event['timestamp']}** - **{event['tag']}**: {event['message']}")
+                else:
+                    st.info("No key events found in this session.")
+                
+                return  # Found and displayed the session
+    
+    # If we reach here, session wasn't found
+    st.error(f"Session {st.session_state.selected_session_id} not found in {st.session_state.selected_file}")
+    if st.button("Clear Selection"):
+        st.session_state.selected_session_id = None
+        st.session_state.selected_file = None
+        st.rerun()
+
 def main():
     """Main application function"""
     st.title("🚗 Automotive Log Analysis Platform (ALAP)")
@@ -491,6 +835,7 @@ def main():
     # AI toggle in sidebar
     st.sidebar.title("Settings")
     use_ai = st.sidebar.checkbox("Enable AI Analysis", value=True)
+    enable_utterance_analysis = st.sidebar.checkbox("Enable Utterance Flow Analysis", value=True)
     
     if use_ai:
         st.sidebar.info("""
@@ -501,6 +846,15 @@ def main():
         - Pattern recognition
         
         The AI starts with statistical methods and learns from your data over time.
+        """)
+        
+    if enable_utterance_analysis:
+        st.sidebar.info("""
+        **Utterance Analysis Enabled:**
+        - Voice command flow tracking
+        - Session correlation
+        - Component pipeline analysis
+        - Processing time analysis
         """)
     
     # File uploader section
@@ -514,7 +868,7 @@ def main():
     # Check if files are uploaded and analyze button is clicked
     if uploaded_files:
         if st.button("Analyze Logs"):
-            perform_analysis(uploaded_files, use_ai=use_ai)
+            perform_analysis(uploaded_files, use_ai=use_ai, enable_utterance_analysis=enable_utterance_analysis)
     
     # Display analysis results if available
     if st.session_state.analysis_results:
@@ -531,60 +885,78 @@ def main():
             if use_ai:
                 display_ai_insights()
             
+            # Display utterance flow analysis
+            if enable_utterance_analysis:
+                display_utterance_analysis()
+            
+            # Show full trace if a session is selected
+            display_full_trace()
+            
             # Display detailed issues
             display_detailed_issues()
             
             # Report generation section
-# Report generation section
-st.header("Report Generation")
+        st.header("Report Generation")
 
-if st.button("Generate Reports") or st.session_state.reports_generated:
-    with st.spinner("Generating reports..."):
-        # Generate reports
-        csv_paths = generate_individual_csv_reports(st.session_state.analysis_results)
-        qa_report_path, dev_report_path = generate_summary_reports_targetted(st.session_state.analysis_results)
-        
-        st.session_state.reports_generated = True
-    
-    # Display report links
-    st.success("Reports generated successfully!")
-    
-    # Add download buttons for CSV reports
-    st.write("#### CSV Reports")
-    for path in csv_paths:
-        with open(path, "rb") as file:
-            st.download_button(
-                label=f"Download {path.name}",
-                data=file,
-                file_name=path.name,
-                mime="text/csv",
-                key=f"csv_{path.name}"  # Add a unique key for each button
-            )
-        st.write(f"- {path}")  # Keep the original path display for reference
-    
-    # Add download buttons for summary reports
-    st.write("#### Summary Reports")
-    if qa_report_path:
-        with open(qa_report_path, "rb") as file:
-            st.download_button(
-                label=f"Download QA Summary",
-                data=file,
-                file_name=qa_report_path.name,
-                mime="text/markdown",
-                key="qa_summary"
-            )
-        st.write(f"- QA Summary: {qa_report_path}")  # Keep the original path display
-    
-    if dev_report_path:
-        with open(dev_report_path, "rb") as file:
-            st.download_button(
-                label=f"Download Developer Summary",
-                data=file,
-                file_name=dev_report_path.name,
-                mime="text/markdown",
-                key="dev_summary"
-            )
-        st.write(f"- Developer Summary: {dev_report_path}")  # Keep the original path display
+        if st.button("Generate Reports"):
+            if not st.session_state.analysis_results:
+                st.error("No analysis results available. Please analyze logs first.")
+            else:
+                with st.spinner("Generating reports..."):
+                    # Generate reports
+                    csv_paths = generate_individual_csv_reports(st.session_state.analysis_results)
+                    qa_report_path, dev_report_path = generate_summary_reports_targetted(st.session_state.analysis_results)
+                    
+                    st.session_state.reports_generated = True
+                    
+                    # Display success message and download buttons only if reports were generated
+                    if csv_paths or qa_report_path or dev_report_path:
+                        st.success("Reports generated successfully!")
+                        
+                        # Add download buttons for CSV reports
+                        if csv_paths:
+                            st.write("#### CSV Reports")
+                            for path in csv_paths:
+                                with open(path, "rb") as file:
+                                    st.download_button(
+                                        label=f"Download {path.name}",
+                                        data=file,
+                                        file_name=path.name,
+                                        mime="text/csv",
+                                        key=f"csv_{path.name}"  # Add a unique key for each button
+                                    )
+                                st.write(f"- {path}")  # Keep the original path display for reference
+                        
+                        # Add download buttons for summary reports
+                        if qa_report_path or dev_report_path:
+                            st.write("#### Summary Reports")
+                            if qa_report_path:
+                                with open(qa_report_path, "rb") as file:
+                                    st.download_button(
+                                        label=f"Download QA Summary",
+                                        data=file,
+                                        file_name=qa_report_path.name,
+                                        mime="text/markdown",
+                                        key="qa_summary"
+                                    )
+                                st.write(f"- QA Summary: {qa_report_path}")  # Keep the original path display
+                            
+                            if dev_report_path:
+                                with open(dev_report_path, "rb") as file:
+                                    st.download_button(
+                                        label=f"Download Developer Summary",
+                                        data=file,
+                                        file_name=dev_report_path.name,
+                                        mime="text/markdown",
+                                        key="dev_summary"
+                                    )
+                                st.write(f"- Developer Summary: {dev_report_path}")  # Keep the original path display
+                    else:
+                        st.error("Failed to generate reports. Please check the logs for errors.")
+
+        # Show previously generated reports if they exist
+        elif st.session_state.reports_generated and st.session_state.analysis_results:
+            st.info("Reports have been generated for the current analysis. Click 'Generate Reports' to regenerate.")
 
 if __name__ == "__main__":
     main()

@@ -47,6 +47,140 @@ def generate_individual_csv_reports(analysis_results_list):
     
     return csv_paths
 
+def enhance_qa_summary(qa_content, analysis_results_list):
+    """
+    Enhances the QA summary report with utterance flow information.
+    
+    Args:
+        qa_content: List of strings containing the current QA report content
+        analysis_results_list: List of analysis result dictionaries
+    
+    Returns:
+        Updated qa_content with utterance flow sections
+    """
+    # Collect all utterance sessions
+    all_sessions = []
+    for result in analysis_results_list:
+        if "error" in result or "utterance_sessions" not in result:
+            continue
+        
+        for session in result["utterance_sessions"]:
+            session['log_file'] = result['log_file_name']
+            all_sessions.append(session)
+    
+    if not all_sessions:
+        return qa_content
+    
+    # Add utterance section to QA report
+    qa_content.append("\n## Utterance Analysis")
+    
+    # Success rate statistics
+    successful = len([s for s in all_sessions if not s['has_errors']])
+    total = len(all_sessions)
+    success_rate = (successful / total) * 100 if total > 0 else 0
+    
+    qa_content.append(f"- **Total Utterances Detected:** {total}")
+    qa_content.append(f"- **Successful Utterances:** {successful}")
+    qa_content.append(f"- **Success Rate:** {success_rate:.1f}%")
+    
+    # Add table of utterances and their status
+    qa_content.append("\n### Utterance Status")
+    qa_content.extend([
+        "| Utterance | Status | Duration (ms) | Log File |",
+        "| --------- | ------ | ------------: | -------- |",
+    ])
+    
+    for session in all_sessions:
+        status = "❌ Failed" if session['has_errors'] else "✅ Success"
+        qa_content.append(f"| {session['utterance'][:50]} | {status} | {session['duration_ms']:.1f} | {session['log_file']} |")
+    
+    return qa_content
+
+def enhance_dev_summary(dev_content, analysis_results_list):
+    """
+    Enhances the Developer summary report with detailed utterance flow information.
+    
+    Args:
+        dev_content: List of strings containing the current Dev report content
+        analysis_results_list: List of analysis result dictionaries
+    
+    Returns:
+        Updated dev_content with utterance flow sections
+    """
+    # Collect all utterance sessions
+    all_sessions = []
+    for result in analysis_results_list:
+        if "error" in result or "utterance_sessions" not in result:
+            continue
+        
+        for session in result["utterance_sessions"]:
+            session['log_file'] = result['log_file_name']
+            all_sessions.append(session)
+    
+    if not all_sessions:
+        return dev_content
+    
+    # Add utterance section to Dev report
+    dev_content.append("\n## Utterance Flow Analysis")
+    
+    # Add detailed info about failed utterances
+    failed_sessions = [s for s in all_sessions if s['has_errors']]
+    
+    if failed_sessions:
+        dev_content.append("\n### Failed Utterance Flows")
+        
+        for i, session in enumerate(failed_sessions):
+            dev_content.append(f"\n#### {i+1}. \"{session['utterance']}\"")
+            dev_content.append(f"- **Session ID:** {session['session_id']}")
+            dev_content.append(f"- **Log File:** {session['log_file']}")
+            dev_content.append(f"- **Duration:** {session['duration_ms']:.2f} ms")
+            dev_content.append(f"- **Start Time:** {session['timestamp_start']}")
+            dev_content.append(f"- **Components Involved:** {', '.join(session['components'])}")
+            
+            # If we have the actual sequence available
+            for result in analysis_results_list:
+                if result['log_file_name'] == session['log_file'] and "parsed_data" in result:
+                    session_data = result["parsed_data"][
+                        result["parsed_data"]["session_id"] == session['session_id']
+                    ]
+                    
+                    if not session_data.empty:
+                        dev_content.append("\n**Error Sequence:**")
+                        
+                        # Filter for errors and warnings
+                        errors = session_data[session_data['level'].isin(['E', 'W', 'F'])]
+                        
+                        for _, error in errors.iterrows():
+                            dev_content.append(f"- `{error['timestamp']}` **{error['tag']}**: {error['level']} - {error['message']}")
+    
+    # Add component interaction analysis
+    dev_content.append("\n### Component Interaction Analysis")
+    
+    # Count which components are most involved in errors
+    component_error_count = {}
+    
+    for session in all_sessions:
+        if session['has_errors']:
+            for component in session['components']:
+                if component not in component_error_count:
+                    component_error_count[component] = 0
+                component_error_count[component] += 1
+    
+    # Show top problematic components
+    if component_error_count:
+        sorted_components = sorted(component_error_count.items(), key=lambda x: x[1], reverse=True)
+        
+        dev_content.append("\n**Top Components in Failed Utterances:**")
+        dev_content.extend([
+            "| Component | Occurrence in Failed Utterances |",
+            "| --------- | ------------------------------: |",
+        ])
+        
+        for component, count in sorted_components[:10]:  # Top 10
+            dev_content.append(f"| {component} | {count} |")
+    
+    return dev_content
+
 def generate_summary_reports_targetted(analysis_results_list):
     """
     Generate targeted summary reports for QA and Dev teams.
@@ -80,8 +214,7 @@ def generate_qa_summary(analysis_results_list):
     Returns:
         Path: Path to the generated QA summary report
     """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_path = Path("reports") / f"qa_summary_report_{timestamp}.md"
+    report_path = Path("reports") / f"qa_summary_report.md"
     
     # Aggregate metrics for QA
     total_issues = sum(result.get('issues_found', 0) for result in analysis_results_list 
@@ -193,6 +326,9 @@ def generate_qa_summary(analysis_results_list):
             if count > 0 and level in ['F', 'E', 'W']:
                 qa_content.append(f"  - {level}: {count}")
     
+    # Enhance with utterance flow information
+    qa_content = enhance_qa_summary(qa_content, analysis_results_list)
+    
     # Write the report
     report_path.write_text("\n".join(qa_content))
     logger.info(f"Generated QA summary report: {report_path}")
@@ -209,8 +345,7 @@ def generate_dev_summary(analysis_results_list):
     Returns:
         Path: Path to the generated Dev summary report
     """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_path = Path("reports") / f"dev_summary_report_{timestamp}.md"
+    report_path = Path("reports") / f"dev_summary_report.md"
     
     # Build the Dev report content
     dev_content = [
@@ -346,6 +481,9 @@ def generate_dev_summary(analysis_results_list):
             anomalies = [e for e in entries if e.get('is_anomaly', False)]
             if anomalies:
                 dev_content.append(f"  - Contains {len(anomalies)} anomalies detected by AI")
+    
+    # Enhance with utterance flow information
+    dev_content = enhance_dev_summary(dev_content, analysis_results_list)
     
     # Write the report
     report_path.write_text("\n".join(dev_content))

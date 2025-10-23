@@ -22,8 +22,10 @@ wheels/
 
 # Virtual environments
 venv/
+.venv/
 env/
 ENV/
+.env/
 
 # IDE
 .vscode/
@@ -37,18 +39,22 @@ Thumbs.db
 
 # Logs folder - contains sensitive data
 logs/
+*.log
 
-#reports/
+# Reports folder - contains analysis results
 reports/
 
 # Model files (can be large)
 models/
 *.joblib
+*.pkl
+*.pickle
 
 # Temporary files
 *.tmp
-*.log
 temp/
+cache/
+.cache/
 
 # Security - Prevent accidental commits of sensitive files
 # API keys and secrets
