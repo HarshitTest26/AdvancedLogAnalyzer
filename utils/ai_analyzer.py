@@ -136,10 +136,19 @@ class AutoLogAI:
         # Extract basic numerical features for anomaly detection
         numerical_features = df[['level_num', 'hour', 'minute', 'second']].fillna(0)
         
-        # Add one-hot encoding for components (top 20 most common)
-        top_components = df['component'].value_counts().nlargest(20).index
-        for component in top_components:
-            numerical_features[f'comp_{component}'] = (df['component'] == component).astype(int)
+        # Instead of using fixed one-hot encoding for components, use a more flexible approach
+        # Create a new feature that indicates if the component is rare or common
+        component_counts = df['component'].value_counts()
+        df['component_frequency'] = df['component'].map(component_counts)
+        numerical_features['component_frequency'] = df['component_frequency']
+        
+        # Add a few severity-related features
+        numerical_features['is_error_or_fatal'] = (df['level'].isin(['E', 'F'])).astype(int)
+        numerical_features['is_warning'] = (df['level'] == 'W').astype(int)
+        
+        # Add a feature for message length (can indicate detailed error messages)
+        df['message_length'] = df['message'].str.len()
+        numerical_features['message_length'] = df['message_length']
         
         return df, numerical_features.fillna(0)
     
@@ -174,12 +183,26 @@ class AutoLogAI:
             
         else:
             logger.info("Using ML-based anomaly detection")
-            # Use the trained model to predict anomalies
-            df['anomaly_score'] = self.anomaly_model.decision_function(features)
-            df['is_anomaly'] = self.anomaly_model.predict(features) == -1
-            # Initialize rare_components for the trained model case
-            component_counts = df['component'].value_counts()
-            rare_components = component_counts[component_counts < 2].index
+            try:
+                # Use the trained model to predict anomalies
+                df['anomaly_score'] = self.anomaly_model.decision_function(features)
+                df['is_anomaly'] = self.anomaly_model.predict(features) == -1
+            except (ValueError, AttributeError) as e:
+                logger.warning(f"Error using trained model: {str(e)}. Falling back to statistical detection.")
+                # If model fails due to feature mismatch, use statistical approach as fallback
+                component_counts = df['component'].value_counts()
+                rare_components = component_counts[component_counts < 2].index
+                
+                # Mark entries with rare components or Fatal/Error levels as anomalies
+                df['is_anomaly'] = df['component'].isin(rare_components) | df['level'].isin(['F', 'E'])
+                df['anomaly_score'] = df['is_anomaly'].apply(lambda x: -10 if x else 0)
+                
+                # Set flag to retrain model later
+                self.is_trained = False
+        
+        # Get component counts for anomaly reasons
+        component_counts = df['component'].value_counts()
+        rare_components = component_counts[component_counts < 2].index
         
         # Add information about why it's considered an anomaly
         # Define the anomaly_reason function inside detect_anomalies so it has access to rare_components
@@ -402,13 +425,23 @@ class AutoLogAI:
                 logger.error("Failed to extract features for training")
                 return
                 
-            # Train anomaly detection model
+            # Train anomaly detection model with more flexible feature handling
             logger.info("Training anomaly detection model")
+            self.anomaly_model = IsolationForest(
+                n_estimators=100, 
+                contamination=0.05,  # Assumes 5% of logs are anomalies
+                random_state=42
+            )
             self.anomaly_model.fit(features)
             
-            # Train text vectorization
+            # Train text vectorization with increased max_features for better coverage
             messages = [entry['message'] for entry in issue_entries]
             logger.info("Training text vectorizer")
+            self.vectorizer = TfidfVectorizer(
+                max_features=10000,  # Increased from 5000
+                ngram_range=(1, 2),
+                stop_words='english'
+            )
             message_vectors = self.vectorizer.fit_transform(messages)
             
             # Train dimensionality reduction
