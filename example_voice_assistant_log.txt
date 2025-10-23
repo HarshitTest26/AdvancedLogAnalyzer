@@ -1,0 +1,39 @@
+01-15 10:00:00.123 1234 5678 I SpeechRecognizer: System initialized
+01-15 10:00:01.234 1234 5679 I AudioManager: Audio device ready
+01-15 10:00:05.123 1234 5678 I SpeechRecognizer: Utterance started, session_id: cmd_001
+01-15 10:00:05.234 1234 5678 I AudioManager: Recording started
+01-15 10:00:05.456 1234 5678 I AHE-NLU: Processing utterance for session_id: cmd_001
+01-15 10:00:05.567 1234 5680 I TC: Intent recognition started for cmd_001
+01-15 10:00:06.012 1234 5680 I TC: Intent: PlayMusic, Confidence: 0.95, session_id: cmd_001
+01-15 10:00:06.234 1234 5681 I DialogManager: Processing intent for cmd_001
+01-15 10:00:06.345 1234 5681 I MusicPlayer: Starting playback
+01-15 10:00:06.567 1234 5681 I TTS: Response generated for session_id: cmd_001
+01-15 10:00:06.789 1234 5682 I AudioManager: Audio playback started
+01-15 10:00:07.012 1234 5678 I SpeechRecognizer: Utterance completed for cmd_001
+01-15 10:00:10.123 1234 5678 W BluetoothAdapter: Connection quality degraded
+01-15 10:00:15.123 1234 5678 I SpeechRecognizer: Voice command received, reqId: cmd_002
+01-15 10:00:15.234 1234 5678 I AHE-NLU: Processing speech input, reqId: cmd_002
+01-15 10:00:15.567 1234 5678 E AHE-NLU: NLU processing failed for reqId: cmd_002, timeout waiting for ASR
+01-15 10:00:15.678 1234 5678 E SpeechRecognizer: Command failed for cmd_002
+01-15 10:00:20.123 1234 5683 I NavigationManager: Route recalculation started
+01-15 10:00:20.234 1234 5683 I NavigationManager: Route calculation completed
+01-15 10:00:25.123 1234 5678 I VoiceAssistant: Voice command started, session_id: cmd_003
+01-15 10:00:25.234 1234 5678 I VoiceAssistant: Processing voice input for cmd_003
+01-15 10:00:25.567 1234 5680 I IntentRecognizer: Intent classification for cmd_003
+01-15 10:00:26.012 1234 5680 I IntentRecognizer: Intent: Navigate, session_id: cmd_003
+01-15 10:00:26.234 1234 5683 I NavigationManager: Starting navigation from voice command cmd_003
+01-15 10:00:26.567 1234 5678 I VoiceAssistant: Command executed successfully for cmd_003
+01-15 10:00:30.123 1234 5678 I SpeechRecognizer: Listening started for new utterance
+01-15 10:00:30.456 1234 5678 I AHE-NLU: Speech recognition in progress
+01-15 10:00:31.789 1234 5680 W TC: Low confidence score for current input
+01-15 10:00:32.012 1234 5678 I SpeechRecognizer: Listening cancelled by user
+01-15 10:00:35.123 1234 5684 I CarService: Vehicle status update received
+01-15 10:00:40.123 1234 5678 I SpeechRecognizer: Utterance started, session_id: cmd_004
+01-15 10:00:40.234 1234 5678 I AHE-NLU: Processing utterance for session_id: cmd_004
+01-15 10:00:40.456 1234 5680 I TC: Intent recognition started for cmd_004
+01-15 10:00:40.789 1234 5680 E TC: Failed to recognize intent for cmd_004, ambiguous input
+01-15 10:00:40.890 1234 5678 W SpeechRecognizer: Low confidence in utterance cmd_004
+01-15 10:00:41.012 1234 5681 I TTS: Playing clarification message for cmd_004
+01-15 10:00:42.123 1234 5678 I SpeechRecognizer: Waiting for clarification on cmd_004
+01-15 10:00:50.123 1234 5678 E SpeechRecognizer: Timeout waiting for clarification, session_id: cmd_004
+01-15 10:00:50.234 1234 5678 E VoiceAssistant: Utterance session failed for cmd_004
