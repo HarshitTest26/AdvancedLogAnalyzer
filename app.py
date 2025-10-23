@@ -11,6 +11,7 @@ from datetime import datetime
 from utils.log_analyzer import analyze_logs_refactored, filter_issues_by_relevance
 from utils.report_generator import generate_individual_csv_reports, generate_summary_reports_targetted
 from utils.ai_analyzer import AutoLogAI
+from utils.utterance_tracer import UtteranceTracer
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -285,7 +286,7 @@ def display_single_result(result, i):
             st.write(f"Pattern Groups: {result['ai_analysis']['summary'].get('cluster_count', 0)}")
     
     # Create filter for QA relevance
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         qa_only = st.checkbox("Show QA Relevant Issues Only", key=f"qa_only_{i}")
     with col2:
@@ -293,6 +294,11 @@ def display_single_result(result, i):
             anomalies_only = st.checkbox("Show AI-Detected Anomalies Only", key=f"anomalies_{i}")
         else:
             anomalies_only = False
+    with col3:
+        if "utterance_analysis" in result:
+            utterance_only = st.checkbox("Show Utterance-Related Only", key=f"utterance_{i}")
+        else:
+            utterance_only = False
     
     # Get filtered issues
     filtered_issues = filter_issues_by_relevance(result['issue_entries'], qa_only)
@@ -300,6 +306,10 @@ def display_single_result(result, i):
     # Further filter by anomalies if requested
     if anomalies_only and "ai_analysis" in result:
         filtered_issues = [entry for entry in filtered_issues if entry.get('is_anomaly', False)]
+    
+    # Further filter by utterance-related if requested
+    if utterance_only and "utterance_analysis" in result:
+        filtered_issues = [entry for entry in filtered_issues if entry.get('is_utterance_related', False)]
     
     if not filtered_issues:
         st.info("No issues found with current filter settings.")
@@ -478,6 +488,201 @@ def display_ai_insights():
             
             break  # Only show status once
 
+def display_utterance_analysis():
+    """Display utterance flow analysis and tracing results"""
+    if not st.session_state.analysis_results:
+        return
+    
+    # Check if any results have utterance analysis
+    has_utterance_data = any(
+        "utterance_analysis" in result and result["utterance_analysis"].get("total_utterance_related", 0) > 0
+        for result in st.session_state.analysis_results if "error" not in result
+    )
+    
+    if not has_utterance_data:
+        return
+    
+    st.header("🎤 Utterance Flow Analysis")
+    st.write("""
+    This section traces voice assistant interactions from when a command is initiated 
+    through to its completion or failure, helping identify issues in the voice processing pipeline.
+    """)
+    
+    # Aggregate utterance statistics
+    total_flows = 0
+    completed_flows = 0
+    failed_flows = 0
+    incomplete_flows = 0
+    all_flows = []
+    
+    for result in st.session_state.analysis_results:
+        if "error" in result or "utterance_analysis" not in result:
+            continue
+        
+        patterns = result["utterance_analysis"].get("patterns", {})
+        total_flows += patterns.get("total_flows", 0)
+        completed_flows += patterns.get("completed", 0)
+        failed_flows += patterns.get("failed", 0)
+        incomplete_flows += patterns.get("incomplete", 0)
+        
+        # Collect all flows for detailed display
+        flows = result["utterance_analysis"].get("flows", [])
+        for flow in flows:
+            flow['source_file'] = result['log_file_name']
+            all_flows.append(flow)
+    
+    # Display summary metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Total Utterances", total_flows)
+    
+    with col2:
+        st.metric("Completed", completed_flows, 
+                 delta=f"{(completed_flows/total_flows*100) if total_flows > 0 else 0:.1f}%")
+    
+    with col3:
+        st.metric("Failed", failed_flows, 
+                 delta=f"{(failed_flows/total_flows*100) if total_flows > 0 else 0:.1f}%",
+                 delta_color="inverse")
+    
+    with col4:
+        st.metric("Incomplete", incomplete_flows)
+    
+    # Visualize utterance success rate
+    if total_flows > 0:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Utterance Status Distribution")
+            
+            # Create pie chart
+            fig, ax = plt.subplots(figsize=(8, 6))
+            status_data = [completed_flows, failed_flows, incomplete_flows]
+            status_labels = ['Completed', 'Failed', 'Incomplete']
+            colors = ['#2ecc71', '#e74c3c', '#f39c12']
+            
+            # Only plot non-zero values
+            plot_data = [(label, value, color) for label, value, color in zip(status_labels, status_data, colors) if value > 0]
+            if plot_data:
+                labels, values, plot_colors = zip(*plot_data)
+                ax.pie(values, labels=labels, autopct='%1.1f%%', colors=plot_colors, startangle=90)
+                ax.set_title("Utterance Flow Status")
+                st.pyplot(fig)
+            else:
+                st.info("No utterance status data available")
+        
+        with col2:
+            st.subheader("Average Flow Duration")
+            
+            # Show average duration by status
+            durations_by_status = {'Completed': [], 'Failed': [], 'Incomplete': []}
+            for flow in all_flows:
+                status = flow.get('status', 'unknown')
+                duration = flow.get('duration_seconds')
+                if duration is not None:
+                    if status == 'completed':
+                        durations_by_status['Completed'].append(duration)
+                    elif status == 'failed':
+                        durations_by_status['Failed'].append(duration)
+                    elif status == 'incomplete':
+                        durations_by_status['Incomplete'].append(duration)
+            
+            # Calculate averages
+            avg_durations = {}
+            for status, durations in durations_by_status.items():
+                if durations:
+                    avg_durations[status] = sum(durations) / len(durations)
+            
+            if avg_durations:
+                fig, ax = plt.subplots(figsize=(8, 6))
+                ax.bar(avg_durations.keys(), avg_durations.values(), 
+                      color=['#2ecc71', '#e74c3c', '#f39c12'])
+                ax.set_ylabel('Duration (seconds)')
+                ax.set_title('Average Duration by Status')
+                plt.tight_layout()
+                st.pyplot(fig)
+            else:
+                st.info("Duration data not available")
+    
+    # Display detailed flow information
+    st.subheader("Utterance Flows")
+    
+    # Add filter options
+    col1, col2 = st.columns(2)
+    with col1:
+        status_filter = st.multiselect(
+            "Filter by Status",
+            options=['completed', 'failed', 'incomplete'],
+            default=['failed', 'incomplete'],
+            key="utterance_status_filter"
+        )
+    
+    with col2:
+        show_inferred = st.checkbox("Show Inferred Flows", value=False, 
+                                    help="Show flows that were inferred from temporal proximity (no explicit session ID)")
+    
+    # Filter flows
+    filtered_flows = [
+        f for f in all_flows 
+        if f.get('status') in status_filter and (show_inferred or not f.get('is_inferred', False))
+    ]
+    
+    if filtered_flows:
+        st.write(f"Showing {len(filtered_flows)} utterance flows")
+        
+        # Display flows in expandable sections
+        for i, flow in enumerate(filtered_flows[:20]):  # Limit to 20 for performance
+            session_id = flow.get('session_id', 'Unknown')
+            status = flow.get('status', 'unknown')
+            duration = flow.get('duration_seconds')
+            source_file = flow.get('source_file', 'Unknown')
+            
+            # Create title with status emoji
+            status_emoji = {
+                'completed': '✅',
+                'failed': '❌',
+                'incomplete': '⚠️',
+                'unknown': '❓'
+            }
+            
+            title = f"{status_emoji.get(status, '•')} {session_id} - {status.upper()}"
+            if duration is not None:
+                title += f" ({duration:.2f}s)"
+            if flow.get('is_inferred'):
+                title += " [Inferred]"
+            
+            with st.expander(title):
+                st.write(f"**Source File:** {source_file}")
+                st.write(f"**Start Time:** {flow.get('start_time', 'N/A')}")
+                st.write(f"**End Time:** {flow.get('end_time', 'N/A')}")
+                st.write(f"**Components Involved:** {', '.join(flow.get('components', []))}")
+                st.write(f"**Total Events:** {flow.get('entry_count', 0)}")
+                
+                # Display timeline
+                if 'timeline' in flow and flow['timeline']:
+                    st.write("\n**Timeline:**")
+                    
+                    timeline_df = pd.DataFrame(flow['timeline'])
+                    # Format for display
+                    if not timeline_df.empty:
+                        display_cols = ['timestamp', 'event_type', 'component', 'level', 'message']
+                        display_cols = [col for col in display_cols if col in timeline_df.columns]
+                        
+                        # Truncate messages for display
+                        if 'message' in timeline_df.columns:
+                            timeline_df['message'] = timeline_df['message'].str[:100]
+                        
+                        st.dataframe(timeline_df[display_cols], use_container_width=True)
+                
+                # Create visual timeline
+                tracer = UtteranceTracer()
+                timeline_text = tracer.create_utterance_timeline(flow)
+                with st.expander("View Visual Timeline"):
+                    st.code(timeline_text, language="text")
+    else:
+        st.info("No utterance flows match the selected filters.")
+
 def main():
     """Main application function"""
     st.title("🚗 Automotive Log Analysis Platform (ALAP)")
@@ -530,6 +735,9 @@ def main():
             # Display AI-specific insights
             if use_ai:
                 display_ai_insights()
+            
+            # Display utterance analysis
+            display_utterance_analysis()
             
             # Display detailed issues
             display_detailed_issues()
