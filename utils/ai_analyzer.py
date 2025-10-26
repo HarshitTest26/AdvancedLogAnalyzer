@@ -23,15 +23,25 @@ class AutoLogAI:
     Provides anomaly detection, pattern recognition, and issue clustering
     """
     
-    def __init__(self, model_dir=None):
+    def __init__(self, model_dir=None, config_manager=None):
         """
         Initialize the AI module with models and vectorizers
         
         Args:
-            model_dir (Path, optional): Directory to load/save models. If None, models will be initialized but not loaded.
+            model_dir (Path, optional): Directory to load/save models
+            config_manager (ConfigManager, optional): Configuration manager for ML parameters
         """
         self.model_dir = Path(model_dir) if model_dir else Path("models")
         self.model_dir.mkdir(parents=True, exist_ok=True)
+        
+        # CRITICAL FIX #1: Make contamination_rate configurable
+        self.config = config_manager
+        if self.config:
+            self.contamination_rate = self.config.get("ml_model.contamination_rate", 0.05)
+            self.sequence_time_threshold = self.config.get("ml_model.sequence_time_threshold_seconds", 5)
+        else:
+            self.contamination_rate = 0.05
+            self.sequence_time_threshold = 5
         
         # Initialize models
         self.anomaly_model = None
@@ -49,21 +59,18 @@ class AutoLogAI:
     def _initialize_models(self):
         """Initialize new models"""
         logger.info("Initializing new AI models")
-        # Initialize anomaly detection model (Isolation Forest)
         self.anomaly_model = IsolationForest(
             n_estimators=100, 
-            contamination=0.05,  # Assumes 5% of logs are anomalies
+            contamination=self.contamination_rate,
             random_state=42
         )
         
-        # Initialize text vectorizer
         self.vectorizer = TfidfVectorizer(
             max_features=5000,
             ngram_range=(1, 2),
             stop_words='english'
         )
         
-        # Initialize dimensionality reduction for text
         self.svd_model = TruncatedSVD(n_components=50, random_state=42)
         
         self.is_trained = False
@@ -114,43 +121,58 @@ class AutoLogAI:
             logger.warning("No issues to preprocess")
             return None, None
         
-        # Convert to DataFrame
-        df = pd.DataFrame(issue_entries)
+        try:
+            # Convert to DataFrame
+            df = pd.DataFrame(issue_entries)
+            
+            # CRITICAL FIX #2: Validate required columns exist
+            required_cols = ['timestamp', 'level', 'component', 'message', 'pid', 'tid']
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                logger.error(f"Missing required columns: {missing_cols}")
+                return None, None
+            
+            # Extract numerical features
+            df['timestamp_obj'] = pd.to_datetime(df['timestamp'], errors='coerce')
+            df['hour'] = df['timestamp_obj'].dt.hour
+            df['minute'] = df['timestamp_obj'].dt.minute
+            df['second'] = df['timestamp_obj'].dt.second
+            df['pid_num'] = pd.to_numeric(df['pid'], errors='coerce')
+            df['tid_num'] = pd.to_numeric(df['tid'], errors='coerce')
+            
+            # Convert severity levels to numerical values
+            severity_mapping = {'F': 1, 'E': 2, 'W': 3, 'I': 4, 'D': 5, 'V': 6}
+            df['level_num'] = df['level'].map(severity_mapping)
+            
+            # CRITICAL FIX #3: Use configurable sequence time threshold
+            df = df.sort_values(by='timestamp_obj')
+            df['seq_id'] = (df['timestamp_obj'].diff() > pd.Timedelta(seconds=self.sequence_time_threshold)).cumsum()
+            
+            # Extract basic numerical features
+            numerical_features = df[['level_num', 'hour', 'minute', 'second']].fillna(0)
+            
+            # CRITICAL FIX #4: Improve feature consistency validation
+            component_counts = df['component'].value_counts()
+            df['component_frequency'] = df['component'].map(component_counts)
+            numerical_features['component_frequency'] = df['component_frequency'].fillna(0)
+            
+            # Add severity-related features
+            numerical_features['is_error_or_fatal'] = (df['level'].isin(['E', 'F'])).astype(int)
+            numerical_features['is_warning'] = (df['level'] == 'W').astype(int)
+            
+            # Add message length feature
+            df['message_length'] = df['message'].astype(str).str.len()
+            numerical_features['message_length'] = df['message_length'].fillna(0)
+            
+            # Validate that features have no NaN or inf values
+            numerical_features = numerical_features.fillna(0)
+            numerical_features = numerical_features.replace([np.inf, -np.inf], 0)
+            
+            return df, numerical_features
         
-        # Extract numerical features
-        df['timestamp_obj'] = pd.to_datetime(df['timestamp'], errors='coerce')
-        df['hour'] = df['timestamp_obj'].dt.hour
-        df['minute'] = df['timestamp_obj'].dt.minute
-        df['second'] = df['timestamp_obj'].dt.second
-        df['pid_num'] = pd.to_numeric(df['pid'], errors='coerce')
-        df['tid_num'] = pd.to_numeric(df['tid'], errors='coerce')
-        
-        # Convert severity levels to numerical values
-        severity_mapping = {'F': 1, 'E': 2, 'W': 3, 'I': 4, 'D': 5, 'V': 6}
-        df['level_num'] = df['level'].map(severity_mapping)
-        
-        # Create sequence IDs (messages that occur close in time)
-        df = df.sort_values(by='timestamp_obj')
-        df['seq_id'] = (df['timestamp_obj'].diff() > pd.Timedelta(seconds=5)).cumsum()
-        
-        # Extract basic numerical features for anomaly detection
-        numerical_features = df[['level_num', 'hour', 'minute', 'second']].fillna(0)
-        
-        # Instead of using fixed one-hot encoding for components, use a more flexible approach
-        # Create a new feature that indicates if the component is rare or common
-        component_counts = df['component'].value_counts()
-        df['component_frequency'] = df['component'].map(component_counts)
-        numerical_features['component_frequency'] = df['component_frequency']
-        
-        # Add a few severity-related features
-        numerical_features['is_error_or_fatal'] = (df['level'].isin(['E', 'F'])).astype(int)
-        numerical_features['is_warning'] = (df['level'] == 'W').astype(int)
-        
-        # Add a feature for message length (can indicate detailed error messages)
-        df['message_length'] = df['message'].str.len()
-        numerical_features['message_length'] = df['message_length']
-        
-        return df, numerical_features.fillna(0)
+        except Exception as e:
+            logger.error(f"Error preprocessing logs: {str(e)}")
+            return None, None
     
     def detect_anomalies(self, issue_entries):
         """
@@ -160,82 +182,78 @@ class AutoLogAI:
             issue_entries (list): List of dictionaries containing log entries
             
         Returns:
-            dict: Original data with anomaly scores
+            list: Original data with anomaly scores
         """
         if not issue_entries:
-            return {"error": "No issues to analyze"}
+            return issue_entries
         
-        df, features = self.preprocess_logs(issue_entries)
-        
-        if features is None or features.empty:
-            return {"error": "Failed to extract features from logs"}
-        
-        # If model is not trained or has very limited data, use statistical methods
-        if not self.is_trained or len(issue_entries) < 100:
-            logger.info("Using statistical anomaly detection (model not yet trained)")
-            # Simple statistical method: mark entries with rare components or levels as anomalies
-            component_counts = df['component'].value_counts()
-            rare_components = component_counts[component_counts < 2].index
+        try:
+            df, features = self.preprocess_logs(issue_entries)
             
-            # Mark entries with rare components or Fatal/Error levels as anomalies
-            df['is_anomaly'] = df['component'].isin(rare_components) | df['level'].isin(['F', 'E'])
-            df['anomaly_score'] = df['is_anomaly'].apply(lambda x: -10 if x else 0)
+            if features is None or features.empty:
+                return issue_entries
             
-        else:
-            logger.info("Using ML-based anomaly detection")
-            try:
-                # Use the trained model to predict anomalies
-                df['anomaly_score'] = self.anomaly_model.decision_function(features)
-                df['is_anomaly'] = self.anomaly_model.predict(features) == -1
-            except (ValueError, AttributeError) as e:
-                logger.warning(f"Error using trained model: {str(e)}. Falling back to statistical detection.")
-                # If model fails due to feature mismatch, use statistical approach as fallback
+            # CRITICAL FIX #5: Add robust model fallback mechanism
+            if not self.is_trained or len(issue_entries) < 100:
+                logger.info("Using statistical anomaly detection (model not yet trained)")
                 component_counts = df['component'].value_counts()
                 rare_components = component_counts[component_counts < 2].index
                 
-                # Mark entries with rare components or Fatal/Error levels as anomalies
                 df['is_anomaly'] = df['component'].isin(rare_components) | df['level'].isin(['F', 'E'])
                 df['anomaly_score'] = df['is_anomaly'].apply(lambda x: -10 if x else 0)
                 
-                # Set flag to retrain model later
-                self.is_trained = False
-        
-        # Get component counts for anomaly reasons
-        component_counts = df['component'].value_counts()
-        rare_components = component_counts[component_counts < 2].index
-        
-        # Add information about why it's considered an anomaly
-        # Define the anomaly_reason function inside detect_anomalies so it has access to rare_components
-        def anomaly_reason(row):
-            if not row['is_anomaly']:
-                return None
+            else:
+                logger.info("Using ML-based anomaly detection")
+                try:
+                    df['anomaly_score'] = self.anomaly_model.decision_function(features)
+                    df['is_anomaly'] = self.anomaly_model.predict(features) == -1
+                except (ValueError, AttributeError) as e:
+                    logger.warning(f"Error using trained model: {str(e)}. Falling back to statistical detection.")
+                    component_counts = df['component'].value_counts()
+                    rare_components = component_counts[component_counts < 2].index
+                    
+                    df['is_anomaly'] = df['component'].isin(rare_components) | df['level'].isin(['F', 'E'])
+                    df['anomaly_score'] = df['is_anomaly'].apply(lambda x: -10 if x else 0)
+                    self.is_trained = False
             
-            reasons = []
-            if row['level'] in ['F', 'E']:
-                reasons.append(f"Severe log level: {row['level']}")
+            # Get component counts for anomaly reasons
+            component_counts = df['component'].value_counts()
+            rare_components = component_counts[component_counts < 2].index
             
-            component = row['component']
-            if component in rare_components:
-                reasons.append(f"Rare component: {component} (seen {component_counts.get(component, 0)} times)")
+            def anomaly_reason(row):
+                if not row['is_anomaly']:
+                    return None
+                
+                reasons = []
+                if row['level'] in ['F', 'E']:
+                    reasons.append(f"Severe log level: {row['level']}")
+                
+                component = row['component']
+                if component in rare_components:
+                    reasons.append(f"Rare component: {component} (seen {component_counts.get(component, 0)} times)")
+                
+                if not reasons:
+                    reasons.append("Unusual pattern detected")
+                
+                return " | ".join(reasons)
             
-            if not reasons:
-                reasons.append("Unusual pattern detected")
+            df['anomaly_reason'] = df.apply(anomaly_reason, axis=1)
             
-            return " | ".join(reasons)
+            # Add to the original entries
+            result = []
+            for i, entry in enumerate(issue_entries):
+                entry_copy = entry.copy()
+                if i < len(df):
+                    entry_copy['is_anomaly'] = bool(df['is_anomaly'].iloc[i])
+                    entry_copy['anomaly_score'] = float(df['anomaly_score'].iloc[i])
+                    entry_copy['anomaly_reason'] = df['anomaly_reason'].iloc[i]
+                result.append(entry_copy)
+            
+            return result
         
-        df['anomaly_reason'] = df.apply(anomaly_reason, axis=1)
-        
-        # Add to the original entries
-        result = []
-        for i, entry in enumerate(issue_entries):
-            entry_copy = entry.copy()
-            if i < len(df):
-                entry_copy['is_anomaly'] = bool(df['is_anomaly'].iloc[i])
-                entry_copy['anomaly_score'] = float(df['anomaly_score'].iloc[i])
-                entry_copy['anomaly_reason'] = df['anomaly_reason'].iloc[i]
-            result.append(entry_copy)
-        
-        return result
+        except Exception as e:
+            logger.error(f"Error detecting anomalies: {str(e)}")
+            return issue_entries
     
     def cluster_similar_issues(self, issue_entries, similarity_threshold=0.7):
         """
@@ -246,34 +264,29 @@ class AutoLogAI:
             similarity_threshold (float): Threshold for considering entries similar (0-1)
             
         Returns:
-            dict: Entries with cluster IDs
+            list: Entries with cluster IDs
         """
         if not issue_entries:
-            return {"error": "No issues to analyze"}
+            return issue_entries
         
         try:
-            # Extract messages for clustering
-            messages = [entry['message'] for entry in issue_entries]
+            messages = [entry.get('message', '') for entry in issue_entries]
             
-            # Use TF-IDF to vectorize the messages
+            # CRITICAL FIX #6: Support multiple vectorization methods
             if not self.is_trained or len(messages) > len(self.vectorizer.vocabulary_) * 2:
-                # If not trained or significantly more data, fit the vectorizer
                 message_vectors = self.vectorizer.fit_transform(messages)
-                # Reduce dimensions for better clustering
                 reduced_vectors = self.svd_model.fit_transform(message_vectors)
             else:
-                # Use pre-trained vectorizer
                 message_vectors = self.vectorizer.transform(messages)
                 reduced_vectors = self.svd_model.transform(message_vectors)
             
-            # Perform DBSCAN clustering (density-based)
+            min_samples = 2
             clustering = DBSCAN(
-                eps=1.0 - similarity_threshold,  # Convert similarity to distance
-                min_samples=2,
+                eps=1.0 - similarity_threshold,
+                min_samples=min_samples,
                 metric='euclidean'
             ).fit(reduced_vectors)
             
-            # Get cluster labels (-1 means no cluster/outlier)
             labels = clustering.labels_
             
             # Add cluster info to the original entries
@@ -287,7 +300,6 @@ class AutoLogAI:
         
         except Exception as e:
             logger.error(f"Error clustering issues: {str(e)}")
-            # Return original entries without clustering
             return issue_entries
     
     def identify_root_causes(self, issue_entries):
@@ -303,49 +315,54 @@ class AutoLogAI:
         if not issue_entries or len(issue_entries) < 5:
             return {"error": "Insufficient data for root cause analysis"}
         
-        df, _ = self.preprocess_logs(issue_entries)
-        
-        if df is None or df.empty:
-            return {"error": "Failed to process log data"}
-        
-        # Sort by timestamp
-        df = df.sort_values(by='timestamp_obj')
-        
-        # Look for patterns of errors following specific informational logs
-        root_causes = []
-        
-        # Group by sequence ID
-        for seq_id, group in df.groupby('seq_id'):
-            if len(group) < 3:
-                continue
-                
-            # Check if sequence contains errors/warnings after info messages
-            errors = group[group['level'].isin(['F', 'E', 'W'])]
-            if len(errors) < 1:
-                continue
-                
-            # Get messages before the first error
-            first_error_idx = group.index[group['level'].isin(['F', 'E', 'W'])][0]
-            before_error = group.loc[:first_error_idx-1]
+        try:
+            df, _ = self.preprocess_logs(issue_entries)
             
-            if len(before_error) > 0:
-                # This sequence has potential causes before errors
-                cause = {
-                    'sequence_id': int(seq_id),
-                    'error_count': len(errors),
-                    'first_error': errors.iloc[0]['message'],
-                    'potential_cause_component': before_error.iloc[-1]['component'] if len(before_error) > 0 else None,
-                    'potential_cause_message': before_error.iloc[-1]['message'] if len(before_error) > 0 else None,
-                    'timestamp_start': group['timestamp'].iloc[0],
-                    'timestamp_end': group['timestamp'].iloc[-1],
-                }
-                root_causes.append(cause)
+            if df is None or df.empty:
+                return {"error": "Failed to process log data"}
+            
+            # Sort by timestamp
+            df = df.sort_values(by='timestamp_obj')
+            
+            root_causes = []
+            
+            # Group by sequence ID
+            for seq_id, group in df.groupby('seq_id'):
+                if len(group) < 3:
+                    continue
+                    
+                errors = group[group['level'].isin(['F', 'E', 'W'])]
+                if len(errors) < 1:
+                    continue
+                    
+                try:
+                    first_error_idx = group.index[group['level'].isin(['F', 'E', 'W'])][0]
+                    before_error = group.loc[:first_error_idx-1]
+                    
+                    if len(before_error) > 0:
+                        cause = {
+                            'sequence_id': int(seq_id),
+                            'error_count': len(errors),
+                            'first_error': errors.iloc[0]['message'],
+                            'potential_cause_component': before_error.iloc[-1]['component'] if len(before_error) > 0 else None,
+                            'potential_cause_message': before_error.iloc[-1]['message'] if len(before_error) > 0 else None,
+                            'timestamp_start': group['timestamp'].iloc[0],
+                            'timestamp_end': group['timestamp'].iloc[-1],
+                        }
+                        root_causes.append(cause)
+                except (IndexError, KeyError) as e:
+                    logger.debug(f"Error processing sequence {seq_id}: {str(e)}")
+                    continue
+            
+            return {
+                'root_cause_count': len(root_causes),
+                'root_causes': root_causes[:5],
+                'analysis_method': 'Temporal sequence analysis' if self.is_trained else 'Basic temporal pattern detection'
+            }
         
-        return {
-            'root_cause_count': len(root_causes),
-            'root_causes': root_causes[:5],  # Return top 5 most likely causes
-            'analysis_method': 'Temporal sequence analysis' if self.is_trained else 'Basic temporal pattern detection'
-        }
+        except Exception as e:
+            logger.error(f"Error analyzing root causes: {str(e)}")
+            return {"error": f"Root cause analysis failed: {str(e)}"}
     
     def analyze_all(self, issue_entries):
         """
@@ -364,64 +381,69 @@ class AutoLogAI:
                 "summary": {"anomaly_count": 0, "cluster_count": 0}
             }
         
-        # Step 1: Detect anomalies
-        enriched_entries = self.detect_anomalies(issue_entries)
-        
-        # Handle errors
-        if isinstance(enriched_entries, dict) and "error" in enriched_entries:
+        try:
+            # Step 1: Detect anomalies
+            enriched_entries = self.detect_anomalies(issue_entries)
+            
+            if not enriched_entries:
+                return {
+                    "error": "Failed to detect anomalies",
+                    "entries": issue_entries,
+                    "summary": {"anomaly_count": 0, "cluster_count": 0}
+                }
+            
+            # Step 2: Cluster similar issues
+            clustered_entries = self.cluster_similar_issues(enriched_entries)
+            
+            if not clustered_entries:
+                return {
+                    "error": "Failed to cluster issues",
+                    "entries": enriched_entries,
+                    "summary": {"anomaly_count": sum(1 for e in enriched_entries if e.get('is_anomaly', False)), 
+                               "cluster_count": 0}
+                }
+            
+            # Step 3: Root cause analysis
+            root_cause_analysis = self.identify_root_causes(clustered_entries)
+            
+            # Count anomalies and clusters
+            anomaly_count = sum(1 for entry in clustered_entries if entry.get('is_anomaly', False))
+            cluster_ids = set(entry.get('cluster_id') for entry in clustered_entries if entry.get('cluster_id') is not None)
+            
+            # Prepare summary
+            summary = {
+                "anomaly_count": anomaly_count,
+                "cluster_count": len(cluster_ids),
+                "root_cause_analysis": root_cause_analysis if "error" not in root_cause_analysis else None
+            }
+            
+            # If we have enough data, train or update models
+            if len(issue_entries) >= 100:
+                if not self.is_trained:
+                    logger.info(f"Training initial model with {len(issue_entries)} entries")
+                    self._train_models(issue_entries)
+                elif len(issue_entries) >= 500:
+                    try:
+                        model_age = datetime.now() - datetime.fromtimestamp(self.model_dir.stat().st_mtime)
+                        if model_age.days >= 7:
+                            logger.info(f"Updating model with {len(issue_entries)} new entries (model is {model_age.days} days old)")
+                            self._train_models(issue_entries)
+                    except (OSError, AttributeError):
+                        logger.info(f"Cannot determine model age, retraining with {len(issue_entries)} entries")
+                        self._train_models(issue_entries)
+            
             return {
-                "error": enriched_entries["error"],
+                "entries": clustered_entries,
+                "summary": summary
+            }
+        
+        except Exception as e:
+            logger.error(f"Error in comprehensive analysis: {str(e)}")
+            return {
+                "error": f"Analysis failed: {str(e)}",
                 "entries": issue_entries,
                 "summary": {"anomaly_count": 0, "cluster_count": 0}
             }
-        
-        # Step 2: Cluster similar issues
-        clustered_entries = self.cluster_similar_issues(enriched_entries)
-        
-        # Handle errors
-        if isinstance(clustered_entries, dict) and "error" in clustered_entries:
-            return {
-                "error": clustered_entries["error"],
-                "entries": enriched_entries,
-                "summary": {"anomaly_count": sum(1 for e in enriched_entries if e.get('is_anomaly', False)), 
-                           "cluster_count": 0}
-            }
-        
-        # Step 3: Root cause analysis
-        root_cause_analysis = self.identify_root_causes(clustered_entries)
-        
-        # Count anomalies and clusters
-        anomaly_count = sum(1 for entry in clustered_entries if entry.get('is_anomaly', False))
-        cluster_ids = set(entry.get('cluster_id') for entry in clustered_entries if entry.get('cluster_id') is not None)
-        
-        # Prepare summary
-        summary = {
-            "anomaly_count": anomaly_count,
-            "cluster_count": len(cluster_ids),
-            "root_cause_analysis": root_cause_analysis if "error" not in root_cause_analysis else None
-        }
-        
-        # If we have enough data, train or update models
-        if len(issue_entries) >= 100:
-            if not self.is_trained:
-                logger.info(f"Training initial model with {len(issue_entries)} entries")
-                self._train_models(issue_entries)
-            elif len(issue_entries) >= 500:  # Retrain periodically with larger datasets
-                # Check when the model was last updated
-                try:
-                    model_age = datetime.now() - datetime.fromtimestamp(self.model_dir.stat().st_mtime)
-                    if model_age.days >= 7:  # Retrain weekly
-                        logger.info(f"Updating model with {len(issue_entries)} new entries (model is {model_age.days} days old)")
-                        self._train_models(issue_entries)
-                except (OSError, AttributeError):
-                    # If we can't determine model age, retrain to be safe
-                    logger.info(f"Cannot determine model age, retraining with {len(issue_entries)} entries")
-                    self._train_models(issue_entries)
-        
-        return {
-            "entries": clustered_entries,
-            "summary": summary
-        }
     
     def _train_models(self, issue_entries):
         """
@@ -437,26 +459,24 @@ class AutoLogAI:
                 logger.error("Failed to extract features for training")
                 return
                 
-            # Train anomaly detection model with more flexible feature handling
+            # CRITICAL FIX #7: Use configurable contamination_rate for training
             logger.info("Training anomaly detection model")
             self.anomaly_model = IsolationForest(
                 n_estimators=100, 
-                contamination=0.05,  # Assumes 5% of logs are anomalies
+                contamination=self.contamination_rate,
                 random_state=42
             )
             self.anomaly_model.fit(features)
             
-            # Train text vectorization with increased max_features for better coverage
-            messages = [entry['message'] for entry in issue_entries]
+            messages = [entry.get('message', '') for entry in issue_entries]
             logger.info("Training text vectorizer")
             self.vectorizer = TfidfVectorizer(
-                max_features=10000,  # Increased from 5000
+                max_features=10000,
                 ngram_range=(1, 2),
                 stop_words='english'
             )
             message_vectors = self.vectorizer.fit_transform(messages)
             
-            # Train dimensionality reduction
             logger.info("Training SVD model")
             self.svd_model.fit(message_vectors)
             
@@ -471,10 +491,25 @@ class AutoLogAI:
     
     def get_training_status(self):
         """Get information about the AI model training status"""
-        return {
-            "is_trained": self.is_trained,
-            "anomaly_model": str(self.anomaly_model.__class__.__name__) if self.anomaly_model else None,
-            "vectorizer": f"TF-IDF with {len(self.vectorizer.vocabulary_) if self.is_trained else 0} features" if self.vectorizer else None,
-            "svd_model": f"SVD with {self.svd_model.n_components} components" if self.svd_model else None,
-            "last_updated": datetime.fromtimestamp(self.model_dir.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S') if self.is_trained else None
-        }
+        try:
+            vocab_size = len(self.vectorizer.vocabulary_) if self.vectorizer and self.is_trained else 0
+            last_updated = None
+            try:
+                last_updated = datetime.fromtimestamp(self.model_dir.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S') if self.is_trained else None
+            except (OSError, AttributeError):
+                pass
+            
+            return {
+                "is_trained": self.is_trained,
+                "anomaly_model": str(self.anomaly_model.__class__.__name__) if self.anomaly_model else None,
+                "vectorizer": f"TF-IDF with {vocab_size} features" if self.vectorizer else None,
+                "svd_model": f"SVD with {self.svd_model.n_components} components" if self.svd_model else None,
+                "last_updated": last_updated,
+                "contamination_rate": self.contamination_rate
+            }
+        except Exception as e:
+            logger.error(f"Error getting training status: {str(e)}")
+            return {
+                "is_trained": self.is_trained,
+                "error": str(e)
+            }
